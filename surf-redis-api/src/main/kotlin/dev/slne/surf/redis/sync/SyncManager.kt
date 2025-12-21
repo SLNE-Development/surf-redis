@@ -1,9 +1,6 @@
 package dev.slne.surf.redis.sync
 
-import kotlinx.serialization.KSerializer
-import kotlinx.serialization.builtins.*
 import kotlinx.serialization.serializer
-import kotlin.reflect.KClass
 
 /**
  * Global manager for synchronized structures.
@@ -11,7 +8,7 @@ import kotlin.reflect.KClass
  */
 object SyncManager {
     private var redisUri: String = "redis://localhost:6379"
-    
+
     /**
      * Initialize the sync manager with a Redis URI.
      * This should be called once at application startup.
@@ -21,41 +18,25 @@ object SyncManager {
     fun init(uri: String) {
         redisUri = uri
     }
-    
+
     /**
      * Get the current Redis URI.
      */
     fun getRedisUri(): String = redisUri
-    
+
     /**
      * Get a serializer for common primitive types.
      * Throws IllegalArgumentException for unsupported types.
      */
     @Suppress("UNCHECKED_CAST")
-    inline fun <reified T> getSerializer(): KSerializer<T> {
-        return when (T::class) {
-            String::class -> String.serializer()
-            Int::class -> Int.serializer()
-            Long::class -> Long.serializer()
-            Float::class -> Float.serializer()
-            Double::class -> Double.serializer()
-            Boolean::class -> Boolean.serializer()
-            Byte::class -> Byte.serializer()
-            Short::class -> Short.serializer()
-            Char::class -> Char.serializer()
-            else -> {
-                // Try to get serializer for @Serializable classes
-                try {
-                    serializer<T>()
-                } catch (e: Exception) {
-                    throw IllegalArgumentException(
-                        "No serializer found for type ${T::class.simpleName}. " +
-                        "Either use a primitive type (String, Int, etc.) or a @Serializable class, " +
-                        "or provide a custom serializer."
-                    )
-                }
-            }
-        } as KSerializer<T>
+    inline fun <reified T> getSerializer() = try {
+        serializer<T>()
+    } catch (e: Exception) {
+        throw IllegalArgumentException(
+            "No serializer found for type ${T::class.simpleName}. " +
+                    "Either use a primitive type (String, Int, etc.) or a @Serializable class, " +
+                    "or provide a custom serializer."
+        )
     }
 }
 

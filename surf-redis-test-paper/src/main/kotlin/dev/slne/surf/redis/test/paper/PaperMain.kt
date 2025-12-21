@@ -30,16 +30,16 @@ class PaperMain : SuspendingJavaPlugin() {
         val syncList = syncList<TestSerializable>("list_serializable")
         val syncMap = syncMap<String, TestSerializable>("map_serializable")
 
-        syncMap.subscribe { type, serializable, any ->
-            logger.info("SyncMap Change - Type: $type, Key: $any, Value: $serializable")
+        syncMap.subscribe { type, key, value ->
+            logger.info("SyncMap Change - Type: $type, Key: $key, Value: $value")
         }
 
-        syncList.subscribe { type, serializable, _ ->
-            logger.info("SyncList Change - Type: $type, Value: $serializable")
+        syncList.subscribe { type, value, index ->
+            logger.info("SyncList Change - Type: $type, Value: $value, Index: $index")
         }
 
-        syncValueString.subscribe { type, string, _ ->
-            logger.info("SyncValue Change - Type: $type, Value: $string")
+        syncValueString.subscribe { type, value, ->
+            logger.info("SyncValue Change - Type: $type, Value: $value")
         }
 
         logger.info("SyncValue: ${syncValueString.get()}")
