@@ -18,7 +18,7 @@ import kotlin.reflect.KClass
  */
 class RedisEventBus(
     redisUri: String,
-    private val coroutineScope: CoroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private val coroutineScope: CoroutineScope = CoroutineScope(SupervisorJob())
 ) {
     private val client: RedisClient = RedisClient.create(redisUri)
     private val pubConnection: StatefulRedisPubSubConnection<String, String> = client.connectPubSub()

@@ -30,9 +30,7 @@ class SyncMap<K, V>(
 ) : SyncStructure<SyncMapChangeListener<K, V>>(
     id,
     redisUri,
-    coroutineScope ?: kotlinx.coroutines.CoroutineScope(
-        kotlinx.coroutines.Dispatchers.Default + kotlinx.coroutines.SupervisorJob()
-    )
+    coroutineScope ?: kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob())
 ) {
     
     private val internalMap = Object2ObjectOpenHashMap<K, V>()

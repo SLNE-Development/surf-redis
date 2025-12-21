@@ -17,7 +17,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 abstract class SyncStructure<L>(
     protected val id: String,
     redisUri: String,
-    private val coroutineScope: CoroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private val coroutineScope: CoroutineScope = CoroutineScope(SupervisorJob())
 ) {
     protected val client: RedisClient = RedisClient.create(redisUri)
     protected val pubConnection: StatefulRedisPubSubConnection<String, String> = client.connectPubSub()

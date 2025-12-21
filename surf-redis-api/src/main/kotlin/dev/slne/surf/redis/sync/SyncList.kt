@@ -25,9 +25,7 @@ class SyncList<T>(
 ) : SyncStructure<SyncListChangeListener<T>>(
     id,
     redisUri,
-    coroutineScope ?: kotlinx.coroutines.CoroutineScope(
-        kotlinx.coroutines.Dispatchers.Default + kotlinx.coroutines.SupervisorJob()
-    )
+    coroutineScope ?: kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob())
 ) {
     
     private val internalList = ObjectArrayList<T>()

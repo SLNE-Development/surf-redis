@@ -25,9 +25,7 @@ class SyncSet<T>(
 ) : SyncStructure<SyncSetChangeListener<T>>(
     id,
     redisUri,
-    coroutineScope ?: kotlinx.coroutines.CoroutineScope(
-        kotlinx.coroutines.Dispatchers.Default + kotlinx.coroutines.SupervisorJob()
-    )
+    coroutineScope ?: kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob())
 ) {
     
     private val internalSet = ObjectOpenHashSet<T>()

@@ -35,7 +35,7 @@ class RedisStreamEventBus(
     private val streamName: String = "surf-redis:events",
     private val consumerGroup: String = "default",
     private val consumerName: String = generateConsumerName(),
-    private val coroutineScope: CoroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private val coroutineScope: CoroutineScope = CoroutineScope(SupervisorJob())
 ) {
     private val connection: StatefulRedisConnection<String, String> = RedisApi.createConnection()
     private val commands = connection.sync()

@@ -24,9 +24,7 @@ class SyncValue<T>(
 ) : SyncStructure<SyncValueChangeListener<T>>(
     id,
     redisUri,
-    coroutineScope ?: CoroutineScope(
-        kotlinx.coroutines.Dispatchers.Default + kotlinx.coroutines.SupervisorJob()
-    )
+    coroutineScope ?: CoroutineScope(kotlinx.coroutines.SupervisorJob())
 ) {
     
     @Volatile
