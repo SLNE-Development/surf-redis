@@ -21,7 +21,7 @@ class SyncValue<T>(
     redisUri: String,
     private val serializer: KSerializer<T>,
     coroutineScope: CoroutineScope? = null
-) : SyncStructure<T>(
+) : SyncStructure<SyncValueChangeListener<T>>(
     id,
     redisUri,
     coroutineScope ?: CoroutineScope(
@@ -33,6 +33,17 @@ class SyncValue<T>(
     private var currentValue: T = defaultValue
     
     override val channelPrefix: String = "surf-redis:sync:value"
+    
+    private fun notifyListeners(changeType: SyncChangeType, value: T) {
+        listeners.forEach { listener ->
+            try {
+                listener.onChange(changeType, value)
+            } catch (e: Exception) {
+                System.err.println("Error notifying listener: ${e.message}")
+                e.printStackTrace()
+            }
+        }
+    }
     
     init {
         // Try to fetch the current value from Redis on initialization

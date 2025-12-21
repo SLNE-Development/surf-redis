@@ -41,7 +41,7 @@ suspend fun syncValueExample(redisUri: String) {
     )
     
     // Subscribe to changes
-    serverStatus.subscribe { changeType, value, _ ->
+    serverStatus.subscribe { changeType, value ->
         println("Server status changed: $changeType -> $value")
     }
     
@@ -69,7 +69,7 @@ suspend fun syncSetExample(redisUri: String) {
     )
     
     // Subscribe to player join/leave events
-    onlinePlayers.subscribe { changeType, player, _ ->
+    onlinePlayers.subscribe { changeType, player ->
         when (changeType) {
             SyncChangeType.ADD -> println("$player joined the server")
             SyncChangeType.REMOVE -> println("$player left the server")
@@ -113,7 +113,7 @@ suspend fun syncMapExample(redisUri: String) {
     )
     
     // Subscribe to player data changes
-    playerData.subscribe { changeType, data, key ->
+    playerData.subscribe { changeType, key, data ->
         when (changeType) {
             SyncChangeType.SET -> println("Player $key data updated: $data")
             SyncChangeType.REMOVE -> println("Player $key data removed")

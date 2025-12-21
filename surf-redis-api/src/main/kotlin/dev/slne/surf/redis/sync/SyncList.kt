@@ -22,7 +22,7 @@ class SyncList<T>(
     redisUri: String,
     private val serializer: KSerializer<T>,
     coroutineScope: CoroutineScope? = null
-) : SyncStructure<T>(
+) : SyncStructure<SyncListChangeListener<T>>(
     id,
     redisUri,
     coroutineScope ?: kotlinx.coroutines.CoroutineScope(
@@ -33,6 +33,17 @@ class SyncList<T>(
     private val internalList = ObjectArrayList<T>()
     
     override val channelPrefix: String = "surf-redis:sync:list"
+    
+    private fun notifyListeners(changeType: SyncChangeType, value: T, index: Int? = null) {
+        listeners.forEach { listener ->
+            try {
+                listener.onChange(changeType, value, index)
+            } catch (e: Exception) {
+                System.err.println("Error notifying listener: ${e.message}")
+                e.printStackTrace()
+            }
+        }
+    }
     
     init {
         // Try to fetch the current list from Redis on initialization

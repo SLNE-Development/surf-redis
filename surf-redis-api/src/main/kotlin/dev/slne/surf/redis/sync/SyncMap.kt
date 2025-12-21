@@ -27,7 +27,7 @@ class SyncMap<K, V>(
     private val keySerializer: KSerializer<K>,
     private val valueSerializer: KSerializer<V>,
     coroutineScope: CoroutineScope? = null
-) : SyncStructure<V>(
+) : SyncStructure<SyncMapChangeListener<K, V>>(
     id,
     redisUri,
     coroutineScope ?: kotlinx.coroutines.CoroutineScope(
@@ -38,6 +38,17 @@ class SyncMap<K, V>(
     private val internalMap = Object2ObjectOpenHashMap<K, V>()
     
     override val channelPrefix: String = "surf-redis:sync:map"
+    
+    private fun notifyListeners(changeType: SyncChangeType, key: K, value: V) {
+        listeners.forEach { listener ->
+            try {
+                listener.onChange(changeType, key, value)
+            } catch (e: Exception) {
+                System.err.println("Error notifying listener: ${e.message}")
+                e.printStackTrace()
+            }
+        }
+    }
     
     @Serializable
     private data class SerializableMapEntry(val key: String, val value: String)
@@ -96,7 +107,7 @@ class SyncMap<K, V>(
         publishMessage(Json.encodeToString(SyncMessage.serializer(), message))
         
         // Notify local listeners
-        notifyListeners(SyncChangeType.SET, value, key)
+        notifyListeners(SyncChangeType.SET, key, value)
         
         return oldValue
     }
@@ -148,7 +159,7 @@ class SyncMap<K, V>(
             publishMessage(Json.encodeToString(SyncMessage.serializer(), message))
             
             // Notify local listeners
-            notifyListeners(SyncChangeType.REMOVE, removedValue, key)
+            notifyListeners(SyncChangeType.REMOVE, key, removedValue)
         }
         
         return removedValue
@@ -291,7 +302,7 @@ class SyncMap<K, V>(
                     synchronized(internalMap) {
                         internalMap[key] = value
                     }
-                    notifyListeners(SyncChangeType.SET, value, key)
+                    notifyListeners(SyncChangeType.SET, key, value)
                 }
                 "REMOVE" -> {
                     val key = syncMessage.key?.let { Json.decodeFromString(keySerializer, it) }
@@ -303,7 +314,7 @@ class SyncMap<K, V>(
                         internalMap.remove(key)
                     }
                     if (removedValue != null) {
-                        notifyListeners(SyncChangeType.REMOVE, removedValue, key)
+                        notifyListeners(SyncChangeType.REMOVE, key, removedValue)
                     }
                 }
                 "CLEAR" -> {

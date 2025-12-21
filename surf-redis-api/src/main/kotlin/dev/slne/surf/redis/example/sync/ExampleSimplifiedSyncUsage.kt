@@ -34,7 +34,7 @@ suspend fun simplifiedSyncValueExample() {
     val serverStatus = syncValue("server-status", "offline")
     
     // Subscribe to changes
-    serverStatus.subscribe { changeType, value, _ ->
+    serverStatus.subscribe { changeType, value ->
         println("Status changed: $changeType -> $value")
     }
     
@@ -57,7 +57,7 @@ suspend fun simplifiedSyncSetExample() {
     val onlinePlayers = syncSet<String>("online-players")
     
     // Subscribe to changes
-    onlinePlayers.subscribe { changeType, player, _ ->
+    onlinePlayers.subscribe { changeType, player ->
         when (changeType) {
             SyncChangeType.ADD -> println("$player joined")
             SyncChangeType.REMOVE -> println("$player left")
@@ -87,7 +87,7 @@ suspend fun simplifiedSyncMapExample() {
     val playerData = syncMap<String, PlayerData>("player-data")
     
     // Subscribe to changes
-    playerData.subscribe { changeType, data, key ->
+    playerData.subscribe { changeType, key, data ->
         println("Player $key: $changeType -> $data")
     }
     
