@@ -13,10 +13,10 @@ import org.bukkit.plugin.java.JavaPlugin
 val plugin get() = JavaPlugin.getPlugin(PaperMain::class.java)
 
 class PaperMain : SuspendingJavaPlugin() {
-    lateinit var redisApi: RedisApi
+    var redisApi = RedisApi
 
     override fun onLoad() {
-        redisApi.init(redisConfigManager.config.url)
+        redisApi = redisApi.init(redisConfigManager.config.url)
     }
 
     override fun onEnable() {

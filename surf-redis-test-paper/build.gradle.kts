@@ -3,7 +3,7 @@ plugins {
 }
 
 surfPaperPluginApi {
-    mainClass("dev.slne.surf.redis.paper.PaperMain")
+    mainClass("dev.slne.surf.redis.test.paper.PaperMain")
     authors.add("red")
 
     generateLibraryLoader(false)
