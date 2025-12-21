@@ -5,8 +5,6 @@ A Kotlin library for Redis-based event distribution using Lettuce. This library 
 ## Quick Start
 
 ```kotlin
-import kotlinx.coroutines.runBlocking
-
 // 1. Create your custom event (must be @Serializable)
 @Serializable
 data class PlayerJoinEvent(val playerName: String) : RedisEvent()
@@ -66,9 +64,6 @@ dependencies {
 Create your custom events by extending the `RedisEvent` class and annotating with `@Serializable`:
 
 ```kotlin
-import dev.slne.surf.redis.event.RedisEvent
-import kotlinx.serialization.Serializable
-
 @Serializable
 data class PlayerJoinEvent(
     val playerName: String,
@@ -82,8 +77,6 @@ data class PlayerJoinEvent(
 Create listeners with methods annotated with `@Subscribe`:
 
 ```kotlin
-import dev.slne.surf.redis.event.Subscribe
-
 class MyListener {
     @Subscribe
     fun onPlayerJoin(event: PlayerJoinEvent) {
@@ -97,9 +90,6 @@ class MyListener {
 Initialize the event bus and register your listeners:
 
 ```kotlin
-import dev.slne.surf.redis.event.RedisEventBus
-import kotlinx.coroutines.runBlocking
-
 fun main() = runBlocking {
     // Connect to Redis
     val eventBus = RedisEventBus("redis://localhost:6379")
@@ -136,8 +126,6 @@ Examples:
 surf-redis provides a centralized way to manage Redis connections via the `RedisApi` singleton:
 
 ```kotlin
-import dev.slne.surf.redis.RedisApi
-
 // Initialize global connection
 RedisApi.init(url = "redis://localhost:6379")
 

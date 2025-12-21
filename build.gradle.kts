@@ -1,18 +1,14 @@
-plugins {
-    id("dev.slne.surf.surfapi.gradle.core")
+buildscript {
+    repositories {
+        gradlePluginPortal()
+        maven("https://repo.slne.dev/repository/maven-public/") { name = "maven-public" }
+    }
+    dependencies {
+        classpath("dev.slne.surf:surf-api-gradle-plugin:1.21.11+")
+    }
 }
 
-group = "dev.slne.surf.redis"
-version = "1.0.0-SNAPSHOT"
-
-dependencies {
-    implementation("io.lettuce:lettuce-core:6.3.0.RELEASE")
-
-    testImplementation(kotlin("test"))
-    testImplementation("org.junit.jupiter:junit-jupiter:5.10.1")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
-}
-
-tasks.test {
-    useJUnitPlatform()
+allprojects {
+    group = "dev.slne.surf.redis"
+    version = "1.0.0-SNAPSHOT"
 }
