@@ -5,10 +5,6 @@ plugins {
 group = "dev.slne.surf.redis"
 version = "1.0.0-SNAPSHOT"
 
-repositories {
-    mavenCentral()
-}
-
 dependencies {
     implementation("io.lettuce:lettuce-core:6.3.0.RELEASE")
 
