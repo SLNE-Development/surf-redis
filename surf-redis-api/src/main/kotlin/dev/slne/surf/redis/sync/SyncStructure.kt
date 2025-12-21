@@ -12,8 +12,9 @@ import java.util.concurrent.CopyOnWriteArrayList
 /**
  * Base class for all synchronized structures.
  * Handles Redis pub/sub communication and change notifications.
+ * @param L The listener type for this structure
  */
-abstract class SyncStructure<T>(
+abstract class SyncStructure<L>(
     protected val id: String,
     redisUri: String,
     private val coroutineScope: CoroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
@@ -23,7 +24,7 @@ abstract class SyncStructure<T>(
     protected val subConnection: StatefulRedisPubSubConnection<String, String> = client.connectPubSub()
     
     // Thread-safe list for listeners
-    protected val listeners = CopyOnWriteArrayList<SyncChangeListener<T>>()
+    protected val listeners = CopyOnWriteArrayList<L>()
     
     protected abstract val channelPrefix: String
     
@@ -66,7 +67,7 @@ abstract class SyncStructure<T>(
      * Subscribe to changes in this synchronized structure.
      * @param listener The listener to be notified of changes
      */
-    fun subscribe(listener: SyncChangeListener<T>) {
+    fun subscribe(listener: L) {
         listeners.add(listener)
     }
     
@@ -74,19 +75,8 @@ abstract class SyncStructure<T>(
      * Unsubscribe from changes in this synchronized structure.
      * @param listener The listener to remove
      */
-    fun unsubscribe(listener: SyncChangeListener<T>) {
+    fun unsubscribe(listener: L) {
         listeners.remove(listener)
-    }
-    
-    protected fun notifyListeners(changeType: SyncChangeType, value: T, key: Any? = null) {
-        listeners.forEach { listener ->
-            try {
-                listener.onChange(changeType, value, key)
-            } catch (e: Exception) {
-                System.err.println("Error notifying listener: ${e.message}")
-                e.printStackTrace()
-            }
-        }
     }
     
     /**

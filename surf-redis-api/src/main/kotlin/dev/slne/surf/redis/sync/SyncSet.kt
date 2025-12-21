@@ -22,7 +22,7 @@ class SyncSet<T>(
     redisUri: String,
     private val serializer: KSerializer<T>,
     coroutineScope: CoroutineScope? = null
-) : SyncStructure<T>(
+) : SyncStructure<SyncSetChangeListener<T>>(
     id,
     redisUri,
     coroutineScope ?: kotlinx.coroutines.CoroutineScope(
@@ -33,6 +33,17 @@ class SyncSet<T>(
     private val internalSet = ObjectOpenHashSet<T>()
     
     override val channelPrefix: String = "surf-redis:sync:set"
+    
+    private fun notifyListeners(changeType: SyncChangeType, value: T) {
+        listeners.forEach { listener ->
+            try {
+                listener.onChange(changeType, value)
+            } catch (e: Exception) {
+                System.err.println("Error notifying listener: ${e.message}")
+                e.printStackTrace()
+            }
+        }
+    }
     
     init {
         // Try to fetch the current set from Redis on initialization
