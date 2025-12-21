@@ -8,9 +8,9 @@ package dev.slne.surf.redis.sync
 fun interface SyncMapChangeListener<K, V> {
     /**
      * Called when a change occurs in the synchronized map.
-     * @param changeType The type of change that occurred
+     * @param changeType The type of change that occurred (SET or REMOVE)
      * @param key The key that was affected
-     * @param value The new or affected value
+     * @param value The new value (for SET) or the removed value (for REMOVE)
      */
     fun onChange(changeType: SyncChangeType, key: K, value: V)
 }

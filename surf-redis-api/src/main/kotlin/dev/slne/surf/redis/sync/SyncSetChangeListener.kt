@@ -7,8 +7,8 @@ package dev.slne.surf.redis.sync
 fun interface SyncSetChangeListener<T> {
     /**
      * Called when a change occurs in the synchronized set.
-     * @param changeType The type of change that occurred
-     * @param value The new or affected value
+     * @param changeType The type of change that occurred (ADD or REMOVE)
+     * @param value The new element (for ADD) or the removed element (for REMOVE)
      */
     fun onChange(changeType: SyncChangeType, value: T)
 }

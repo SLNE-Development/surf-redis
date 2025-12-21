@@ -7,9 +7,9 @@ package dev.slne.surf.redis.sync
 fun interface SyncListChangeListener<T> {
     /**
      * Called when a change occurs in the synchronized list.
-     * @param changeType The type of change that occurred
-     * @param value The new or affected value
-     * @param index Optional index for operations that affect a specific position (null for general operations)
+     * @param changeType The type of change that occurred (ADD, SET, or REMOVE)
+     * @param value The new value (for ADD/SET) or the removed value (for REMOVE)
+     * @param index The position in the list: provided for ADD_AT, SET, and REMOVE_AT operations; null for general ADD and REMOVE operations
      */
     fun onChange(changeType: SyncChangeType, value: T, index: Int?)
 }
