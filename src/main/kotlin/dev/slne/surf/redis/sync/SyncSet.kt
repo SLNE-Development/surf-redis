@@ -1,4 +1,4 @@
-package de.slne.redis.sync
+package dev.slne.surf.redis.sync
 
 import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet
 import kotlinx.coroutines.CoroutineScope

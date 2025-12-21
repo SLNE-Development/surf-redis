@@ -1,4 +1,4 @@
-package de.slne.redis.sync
+package dev.slne.surf.redis.sync
 
 /**
  * Listener interface for subscribing to changes in synchronized structures.

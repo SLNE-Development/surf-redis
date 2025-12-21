@@ -1,4 +1,4 @@
-package de.slne.redis
+package dev.slne.surf.redis
 
 import io.lettuce.core.RedisClient
 import io.lettuce.core.api.StatefulRedisConnection

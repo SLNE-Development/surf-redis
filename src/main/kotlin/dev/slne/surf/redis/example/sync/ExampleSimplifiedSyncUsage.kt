@@ -1,6 +1,6 @@
-package de.slne.redis.example.sync
+package dev.slne.surf.redis.example.sync
 
-import de.slne.redis.sync.*
+import dev.slne.surf.redis.sync.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable

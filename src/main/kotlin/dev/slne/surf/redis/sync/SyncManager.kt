@@ -1,4 +1,4 @@
-package de.slne.redis.sync
+package dev.slne.surf.redis.sync
 
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.*

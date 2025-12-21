@@ -1,7 +1,7 @@
-package de.slne.redis.example
+package dev.slne.surf.redis.example
 
-import de.slne.redis.event.RedisEventBus
-import de.slne.redis.event.Subscribe
+import dev.slne.surf.redis.event.RedisEventBus
+import dev.slne.surf.redis.event.Subscribe
 import kotlinx.coroutines.runBlocking
 
 /**

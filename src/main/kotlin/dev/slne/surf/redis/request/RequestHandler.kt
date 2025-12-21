@@ -1,4 +1,4 @@
-package de.slne.redis.request
+package dev.slne.surf.redis.request
 
 /**
  * Annotation to mark methods as Redis request handlers.

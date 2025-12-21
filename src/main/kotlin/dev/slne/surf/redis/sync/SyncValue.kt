@@ -1,4 +1,4 @@
-package de.slne.redis.sync
+package dev.slne.surf.redis.sync
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.runBlocking
@@ -24,7 +24,7 @@ class SyncValue<T>(
 ) : SyncStructure<T>(
     id,
     redisUri,
-    coroutineScope ?: kotlinx.coroutines.CoroutineScope(
+    coroutineScope ?: CoroutineScope(
         kotlinx.coroutines.Dispatchers.Default + kotlinx.coroutines.SupervisorJob()
     )
 ) {

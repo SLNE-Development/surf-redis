@@ -1,4 +1,4 @@
-package de.slne.redis.sync
+package dev.slne.surf.redis.sync
 
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable

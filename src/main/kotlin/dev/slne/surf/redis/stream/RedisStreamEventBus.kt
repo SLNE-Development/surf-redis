@@ -1,8 +1,8 @@
-package de.slne.redis.stream
+package dev.slne.surf.redis.stream
 
-import de.slne.redis.RedisApi
-import de.slne.redis.event.RedisEvent
-import de.slne.redis.event.Subscribe
+import dev.slne.surf.redis.RedisApi
+import dev.slne.surf.redis.event.RedisEvent
+import dev.slne.surf.redis.event.Subscribe
 import io.lettuce.core.Consumer
 import io.lettuce.core.StreamMessage
 import io.lettuce.core.XReadArgs

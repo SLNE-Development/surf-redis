@@ -1,4 +1,4 @@
-package de.slne.redis.event
+package dev.slne.surf.redis.event
 
 import kotlinx.serialization.Serializable
 

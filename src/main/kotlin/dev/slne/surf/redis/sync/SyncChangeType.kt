@@ -1,4 +1,4 @@
-package de.slne.redis.sync
+package dev.slne.surf.redis.sync
 
 /**
  * Represents the type of change that occurred in a synchronized structure.

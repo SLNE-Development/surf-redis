@@ -1,4 +1,4 @@
-package de.slne.redis.request
+package dev.slne.surf.redis.request
 
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -9,7 +9,7 @@ import kotlin.test.assertTrue
 
 class RedisRequestTest {
     
-    @Serializable
+    @org.gradle.internal.impldep.kotlinx.serialization.Serializable
     data class TestRequest(val message: String, val value: Int) : RedisRequest()
     
     @Test

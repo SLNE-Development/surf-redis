@@ -1,7 +1,7 @@
-package de.slne.redis.example.request
+package dev.slne.surf.redis.example.request
 
-import de.slne.redis.request.RedisRequest
-import de.slne.redis.request.RedisResponse
+import dev.slne.surf.redis.request.RedisRequest
+import dev.slne.surf.redis.request.RedisResponse
 import kotlinx.serialization.Serializable
 
 /**

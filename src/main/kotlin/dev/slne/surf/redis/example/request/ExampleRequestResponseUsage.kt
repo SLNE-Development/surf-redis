@@ -1,8 +1,8 @@
-package de.slne.redis.example.request
+package dev.slne.surf.redis.example.request
 
-import de.slne.redis.request.RequestContext
-import de.slne.redis.request.RequestHandler
-import de.slne.redis.request.RequestResponseBus
+import dev.slne.surf.redis.request.RequestContext
+import dev.slne.surf.redis.request.RequestHandler
+import dev.slne.surf.redis.request.RequestResponseBus
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking

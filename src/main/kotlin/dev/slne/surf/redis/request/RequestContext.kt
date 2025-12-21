@@ -1,4 +1,4 @@
-package de.slne.redis.request
+package dev.slne.surf.redis.request
 
 import kotlinx.coroutines.CoroutineScope
 import java.util.concurrent.atomic.AtomicBoolean

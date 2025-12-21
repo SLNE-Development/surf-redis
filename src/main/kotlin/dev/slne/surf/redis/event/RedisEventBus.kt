@@ -1,4 +1,4 @@
-package de.slne.redis.event
+package dev.slne.surf.redis.event
 
 import io.lettuce.core.RedisClient
 import io.lettuce.core.pubsub.RedisPubSubListener

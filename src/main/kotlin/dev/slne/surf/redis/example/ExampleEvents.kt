@@ -1,6 +1,6 @@
-package de.slne.redis.example
+package dev.slne.surf.redis.example
 
-import de.slne.redis.event.RedisEvent
+import dev.slne.surf.redis.event.RedisEvent
 import kotlinx.serialization.Serializable
 
 /**

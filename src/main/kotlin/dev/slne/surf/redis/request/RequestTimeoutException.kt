@@ -1,4 +1,4 @@
-package de.slne.redis.request
+package dev.slne.surf.redis.request
 
 /**
  * Exception thrown when a request times out without receiving a response.
