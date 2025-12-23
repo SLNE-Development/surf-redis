@@ -19,7 +19,7 @@ class RequestContext<TRequest : RedisRequest> internal constructor(
     val request: TRequest,
     private val respondCallback: (RedisResponse) -> Deferred<Long>
 ) {
-    private val responded = AtomicBoolean(false)
+    val responded = AtomicBoolean(false)
 
     /**
      * Sends a response for this request.
@@ -35,6 +35,11 @@ class RequestContext<TRequest : RedisRequest> internal constructor(
         if (!responded.compareAndSet(false, true)) {
             throw IllegalStateException("Response already sent for this request")
         }
+        return respondCallback(response)
+    }
+
+    fun respondIgnoring(response: RedisResponse): Deferred<Long> {
+        responded.compareAndSet(false, true)
         return respondCallback(response)
     }
 }
