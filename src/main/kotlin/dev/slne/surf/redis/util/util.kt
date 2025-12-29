@@ -19,7 +19,7 @@ internal fun <T : Any> Mono<T>.asDeferred(): Deferred<T> {
         override fun onSubscribe(s: Subscription) {
             subscription = s
             deferred.invokeOnCompletion {
-                if (deferred.isCancelled) s.cancel()
+                if (deferred.isCancelled) subscription?.cancel()
             }
 
             s.request(Long.MAX_VALUE)
