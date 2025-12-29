@@ -14,8 +14,10 @@ internal fun <T : Any> Mono<T>.asDeferred(): Deferred<T> {
 
     subscribe(object : Subscriber<T> {
         private var value: T? = null
+        private var subscription: Subscription? = null
 
         override fun onSubscribe(s: Subscription) {
+            subscription = s
             deferred.invokeOnCompletion {
                 if (deferred.isCancelled) s.cancel()
             }
@@ -28,6 +30,7 @@ internal fun <T : Any> Mono<T>.asDeferred(): Deferred<T> {
                 value ?: throw NoSuchElementException("Mono completed without emitting any value")
             )
             value = null
+            subscription = null
         }
 
         override fun onNext(t: T) {
@@ -36,6 +39,7 @@ internal fun <T : Any> Mono<T>.asDeferred(): Deferred<T> {
 
         override fun onError(t: Throwable) {
             deferred.completeExceptionally(t)
+            subscription = null
         }
     })
 
