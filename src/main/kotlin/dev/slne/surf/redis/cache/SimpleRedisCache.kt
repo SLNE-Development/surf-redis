@@ -9,6 +9,7 @@ import kotlinx.coroutines.reactor.awaitSingleOrNull
 import kotlinx.serialization.KSerializer
 import reactor.core.Disposable
 import java.io.Closeable
+import java.util.UUID
 import kotlin.time.Duration
 import kotlin.time.toJavaDuration
 import org.redisson.client.codec.StringCodec.INSTANCE as StringCodec
@@ -41,7 +42,11 @@ class SimpleRedisCache<K : Any, V : Any> internal constructor(
         private val log = logger()
         private const val NULL_MARKER = "__NULL__"
         private const val INVALIDATION_TOPIC_SUFFIX = ":__cache_invalidate__"
+        private const val MESSAGE_DELIMITER = "|"
     }
+
+    // Unique ID for this cache instance to filter out self-published invalidation messages
+    private val nodeId = UUID.randomUUID().toString()
 
     private val invalidationTopicName = "$namespace$INVALIDATION_TOPIC_SUFFIX"
     private val invalidationTopic by lazy {
@@ -65,7 +70,17 @@ class SimpleRedisCache<K : Any, V : Any> internal constructor(
 
             invalidationSubscriptionDisposable = invalidationTopic.getMessages(String::class.java)
                 .subscribe(
-                    { keyStr -> nearCache.invalidate(keyStr) },
+                    { message ->
+                        // Message format: "nodeId|localKey"
+                        val parts = message.split(MESSAGE_DELIMITER, limit = 2)
+                        if (parts.size == 2) {
+                            val (publisherNodeId, keyStr) = parts
+                            // Only invalidate if the message was published by a different node
+                            if (publisherNodeId != nodeId) {
+                                nearCache.invalidate(keyStr)
+                            }
+                        }
+                    },
                     { error ->
                         log.atSevere()
                             .withCause(error)
@@ -140,7 +155,8 @@ class SimpleRedisCache<K : Any, V : Any> internal constructor(
             .awaitSingleOrNull()
 
         nearCache.put(localKey, CacheEntry.Value(value))
-        invalidationTopic.publish(localKey).awaitSingle()
+        // Publish invalidation message with nodeId to allow other nodes to invalidate
+        invalidationTopic.publish("$nodeId$MESSAGE_DELIMITER$localKey").awaitSingle()
     }
 
     /**
@@ -198,7 +214,8 @@ class SimpleRedisCache<K : Any, V : Any> internal constructor(
             .awaitSingleOrNull()
 
         nearCache.put(localKey, CacheEntry.Null)
-        invalidationTopic.publish(localKey).awaitSingle()
+        // Publish invalidation message with nodeId to allow other nodes to invalidate
+        invalidationTopic.publish("$nodeId$MESSAGE_DELIMITER$localKey").awaitSingle()
     }
 
     /**
@@ -219,7 +236,8 @@ class SimpleRedisCache<K : Any, V : Any> internal constructor(
             .awaitSingle()
 
         nearCache.invalidate(localKey)
-        invalidationTopic.publish(localKey).awaitSingle()
+        // Publish invalidation message with nodeId to allow other nodes to invalidate
+        invalidationTopic.publish("$nodeId$MESSAGE_DELIMITER$localKey").awaitSingle()
 
         return if (deleted) 1L else 0L
     }
