@@ -46,7 +46,8 @@ class SimpleRedisCache<K : Any, V : Any> internal constructor(
     }
 
     // Unique ID for this cache instance to filter out self-published invalidation messages
-    private val nodeId = UUID.randomUUID().toString()
+    // Using shortened UUID (without dashes) to reduce message overhead
+    private val nodeId = UUID.randomUUID().toString().replace("-", "")
 
     private val invalidationTopicName = "$namespace$INVALIDATION_TOPIC_SUFFIX"
     private val invalidationTopic by lazy {
@@ -79,6 +80,9 @@ class SimpleRedisCache<K : Any, V : Any> internal constructor(
                             if (publisherNodeId != nodeId) {
                                 nearCache.invalidate(keyStr)
                             }
+                        } else {
+                            log.atWarning()
+                                .log("Received malformed cache invalidation message on topic $invalidationTopicName: $message")
                         }
                     },
                     { error ->
