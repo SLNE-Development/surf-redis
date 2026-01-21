@@ -10,28 +10,27 @@ local maxLen     = tonumber(ARGV[3])
 local ttl        = tonumber(ARGV[4])
 local fieldType  = ARGV[5]
 local fieldMsg   = ARGV[6]
-local eventType  = ARGV[7] -- "VAL"
-local id         = ARGV[8]
-local prefix     = ARGV[9]
+local eventType  = ARGV[7] -- "ALL"
+local prefix     = ARGV[8]
 
-local valKey     = prefix .. ":__val__:" .. id
-
-local removedVal = redis.call('DEL', valKey)
-local removedId  = redis.call('SREM', idsKey, id)
-
-if redis.call('SCARD', idsKey) == 0 then
-    redis.call('DEL', idsKey)
+local removed    = 0
+while true do
+    local id = redis.call('SPOP', idsKey)
+    if not id then break end
+    redis.call('DEL', prefix .. ":__val__:" .. id)
+    removed = removed + 1
 end
+redis.call('DEL', idsKey)
 
-if (removedVal + removedId) == 0 then
+if removed == 0 then
     return 0
 end
 
 local ver = redis.call('INCR', versionKey)
-local msg = tostring(ver) .. delim .. originId .. delim .. id
+local msg = tostring(ver) .. delim .. originId .. delim
 redis.call('XADD', streamKey, 'MAXLEN', '~', maxLen, '*', fieldType, eventType, fieldMsg, msg)
 
 redis.call('PEXPIRE', streamKey, ttl)
 redis.call('PEXPIRE', versionKey, ttl)
 
-return 1
+return removed
