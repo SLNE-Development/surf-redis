@@ -167,10 +167,9 @@ class SyncListImpl<T : Any>(
 
 
     override fun overrideFromRemote(raw: SimpleVersionedSnapshot<List<String>>) {
-        val elements = raw.value.map(::decodeValue)
         lock.write {
             list.clear()
-            list.addAll(elements)
+            raw.value.mapTo(list, ::decodeValue)
         }
         super.overrideFromRemote(raw)
     }

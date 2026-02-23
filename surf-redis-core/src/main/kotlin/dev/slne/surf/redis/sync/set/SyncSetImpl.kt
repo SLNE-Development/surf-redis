@@ -191,10 +191,9 @@ class SyncSetImpl<T : Any>(
     ).map { SimpleVersionedSnapshot.fromTuple(it) }
 
     override fun overrideFromRemote(raw: SimpleVersionedSnapshot<Set<String>>) {
-        val decoded = raw.value.map(::decodeValue)
         lock.write {
             set.clear()
-            set.addAll(decoded)
+            raw.value.mapTo(set, ::decodeValue)
         }
         super.overrideFromRemote(raw)
     }
