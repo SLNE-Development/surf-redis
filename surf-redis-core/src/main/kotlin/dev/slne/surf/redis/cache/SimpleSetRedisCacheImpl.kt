@@ -212,22 +212,17 @@ class SimpleSetRedisCacheImpl<T : Any>(
             return
         }
 
-        val shouldInvalidate = AtomicBoolean(false)
-        val oldVersion = lastVersion.getAndUpdate { currentVer ->
+        val prevVersion = lastVersion.getAndUpdate { cur ->
             when {
-                currentVer == 0L -> version
-                version <= currentVer -> currentVer
-                version == currentVer + 1 -> version
-                else -> {
-                    shouldInvalidate.set(true)
-                    version
-                }
+                cur == 0L -> version
+                version <= cur -> cur
+                else -> version
             }
         }
 
-        if (shouldInvalidate.get()) {
+        if (prevVersion != 0L && version > prevVersion + 1) {
             log.atWarning()
-                .log("Version gap detected in cache '$namespace': last=$oldVersion, new=$version. Clearing near-cache.")
+                .log("Version gap detected in cache '$namespace': last=$prevVersion, new=$version. Clearing near-cache.")
             clearNearCacheOnly()
             return
         }
