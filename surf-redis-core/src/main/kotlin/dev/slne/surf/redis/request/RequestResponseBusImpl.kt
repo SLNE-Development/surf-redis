@@ -210,15 +210,18 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
     ): T {
         RedisComponentProvider.injectOriginId(request)
 
-        val serializer = serializerCache.get(request.javaClass)
-            ?: throw IllegalStateException("No serializer found for request class: ${request::class.simpleName}")
+        @Suppress("UNCHECKED_CAST")
+        val serializer = (serializerCache.get(request.javaClass)
+            ?: throw IllegalStateException("No serializer found for request class: ${request::class.simpleName}"))
+                as KSerializer<RedisRequest>
 
         val requestId = UUID.randomUUID()
         val deferred = CompletableDeferred<RedisResponse>()
 
         pendingRequests[requestId] = deferred
         // Avoid a String.hashCode + ConcurrentHashMap put on every request when this response
-        // type has already been registered.
+        // type has already been registered. putIfAbsent is atomic, so a redundant put from a
+        // concurrent thread is harmless.
         if (!responseTypeRegistry.containsKey(responseType.name)) {
             responseTypeRegistry.putIfAbsent(responseType.name, responseType)
         }
@@ -259,12 +262,15 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
      *         or `0` if the response could not be serialized
      */
     private fun sendResponse(requestId: UUID, response: RedisResponse): Deferred<Long> {
-        val serializer = serializerCache.get(response.javaClass)
-        if (serializer == null) {
+        val rawSerializer = serializerCache.get(response.javaClass)
+        if (rawSerializer == null) {
             log.atWarning()
                 .log("No serializer found for response class: ${response::class.simpleName} - ignoring response.")
             return CompletableDeferred(0L)
         }
+
+        @Suppress("UNCHECKED_CAST")
+        val serializer = rawSerializer as KSerializer<RedisResponse>
 
         val message = try {
             api.json.encodeToString(
@@ -506,7 +512,7 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
      */
     @OptIn(ExperimentalSerializationApi::class)
     private inner class RequestEnvelopeSerializer(
-        private val dataSerializer: KSerializer<Any>
+        private val dataSerializer: KSerializer<RedisRequest>
     ) : KSerializer<RequestEnvelopePayload> {
         override val descriptor: SerialDescriptor =
             buildClassSerialDescriptor("RequestEnvelope") {
@@ -532,7 +538,7 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
      */
     @OptIn(ExperimentalSerializationApi::class)
     private inner class ResponseEnvelopeSerializer(
-        private val dataSerializer: KSerializer<Any>
+        private val dataSerializer: KSerializer<RedisResponse>
     ) : KSerializer<ResponseEnvelopePayload> {
         override val descriptor: SerialDescriptor =
             buildClassSerialDescriptor("ResponseEnvelope") {
