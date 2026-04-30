@@ -17,9 +17,18 @@ import dev.slne.surf.redis.util.asDeferred
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap
 import kotlinx.coroutines.*
 import kotlinx.coroutines.reactor.awaitSingle
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.descriptors.buildClassSerialDescriptor
+import kotlinx.serialization.descriptors.element
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.encoding.encodeStructure
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.serializer
 import reactor.core.Disposable
 import reactor.core.publisher.Mono
 import java.lang.reflect.ParameterizedType
@@ -200,15 +209,32 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
         timeoutMs: Long
     ): T {
         RedisComponentProvider.injectOriginId(request)
+
+        val serializer = serializerCache.get(request.javaClass)
+            ?: throw IllegalStateException("No serializer found for request class: ${request::class.simpleName}")
+
         val requestId = UUID.randomUUID()
-        val requestData = serializeRequest(request) ?: throw IllegalStateException()
         val deferred = CompletableDeferred<RedisResponse>()
 
         pendingRequests[requestId] = deferred
-        responseTypeRegistry[responseType.name] = responseType
+        // Avoid a String.hashCode + ConcurrentHashMap put on every request when this response
+        // type has already been registered.
+        if (!responseTypeRegistry.containsKey(responseType.name)) {
+            responseTypeRegistry.putIfAbsent(responseType.name, responseType)
+        }
 
-        val envelope = RequestEnvelope.forRequest(request, requestId, requestData)
-        val message = api.json.encodeToString(envelope)
+        val message = try {
+            api.json.encodeToString(
+                RequestEnvelopeSerializer(serializer),
+                RequestEnvelopePayload(requestId, request.javaClass.name, request)
+            )
+        } catch (e: SerializationException) {
+            pendingRequests.remove(requestId)
+            log.atWarning()
+                .withCause(e)
+                .log("Unable to serialize request: ${e.message}")
+            throw IllegalStateException("Unable to serialize request: ${request::class.simpleName}", e)
+        }
 
         requestTopic.publish(message).awaitSingle()
 
@@ -233,9 +259,24 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
      *         or `0` if the response could not be serialized
      */
     private fun sendResponse(requestId: UUID, response: RedisResponse): Deferred<Long> {
-        val responseData = serializeResponse(response) ?: return CompletableDeferred(0L)
-        val envelope = ResponseEnvelope.forResponse(response, requestId, responseData)
-        val message = api.json.encodeToString(envelope)
+        val serializer = serializerCache.get(response.javaClass)
+        if (serializer == null) {
+            log.atWarning()
+                .log("No serializer found for response class: ${response::class.simpleName} - ignoring response.")
+            return CompletableDeferred(0L)
+        }
+
+        val message = try {
+            api.json.encodeToString(
+                ResponseEnvelopeSerializer(serializer),
+                ResponseEnvelopePayload(requestId, response.javaClass.name, response)
+            )
+        } catch (e: SerializationException) {
+            log.atWarning()
+                .withCause(e)
+                .log("Unable to serialize response: ${e.message}")
+            return CompletableDeferred(0L)
+        }
 
         return responseTopic.publish(message).asDeferred()
     }
@@ -306,43 +347,17 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
             @Suppress("UNCHECKED_CAST")
             requestType as Class<out RedisRequest>
 
-            registrationLock.write {
-                requestTypeRegistry[requestType.name] = requestType
-            }
-
             val invoker = INVOKER_FACTORY.create(handler, method, requestType)
-            val current =
-                registrationLock.write { requestHandlers.putIfAbsent(requestType, invoker) }
+            val current = registrationLock.write {
+                requestTypeRegistry[requestType.name] = requestType
+                requestHandlers.putIfAbsent(requestType, invoker)
+            }
 
             if (current != null) {
                 log.atWarning()
                     .withStackTrace(StackSize.MEDIUM)
                     .log("A request handler is already registered for request type: ${requestType.name} - ignoring duplicate registration in method ${method.name} of class ${handlerClass.name}.")
             }
-        }
-    }
-
-    /**
-     * Serializes a request to JSON.
-     *
-     * @return the serialized request, or `null` if no serializer is available or serialization fails
-     */
-    private fun serializeRequest(request: RedisRequest): JsonElement? {
-        val serializer = serializerCache.get(request.javaClass)
-
-        if (serializer == null) {
-            log.atWarning()
-                .log("No serializer found for request class: ${request::class.simpleName} - ignoring request.")
-            return null
-        }
-
-        try {
-            return api.json.encodeToJsonElement(serializer, request)
-        } catch (e: SerializationException) {
-            log.atWarning()
-                .withCause(e)
-                .log("Unable to serialize request: ${e.message}")
-            return null
         }
     }
 
@@ -376,30 +391,6 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
             log.atWarning()
                 .withCause(e)
                 .log("Unable to deserialize request: ${e.message}")
-            return null
-        }
-    }
-
-    /**
-     * Serializes a response to JSON.
-     *
-     * @return the serialized response, or `null` if no serializer is available or serialization fails
-     */
-    private fun serializeResponse(response: RedisResponse): JsonElement? {
-        val serializer = serializerCache.get(response.javaClass)
-
-        if (serializer == null) {
-            log.atWarning()
-                .log("No serializer found for response class: ${response::class.simpleName} - ignoring response.")
-            return null
-        }
-
-        try {
-            return api.json.encodeToJsonElement(serializer, response)
-        } catch (e: SerializationException) {
-            log.atWarning()
-                .withCause(e)
-                .log("Unable to serialize response: ${e.message}")
             return null
         }
     }
@@ -456,50 +447,109 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
     }
 
     /**
+     * Serializer used to encode the [SerializableUUID] type alias for the request id wire field.
+     *
+     * Resolved once and reused across both envelope serializers.
+     */
+    private val uuidSerializer: KSerializer<SerializableUUID> =
+        api.json.serializersModule.serializer()
+
+    /**
      * Wire format for request messages published to Redis.
+     *
+     * Used only for **decoding** incoming messages. For encoding, see [RequestEnvelopeSerializer].
      */
     @Serializable
     private data class RequestEnvelope(
         val requestId: SerializableUUID,
         val requestClass: String,
         val requestData: JsonElement
-    ) {
-        companion object {
-            fun forRequest(
-                request: RedisRequest,
-                requestId: UUID,
-                data: JsonElement
-            ): RequestEnvelope {
-                return RequestEnvelope(
-                    requestId = requestId,
-                    requestClass = request.javaClass.name,
-                    requestData = data
-                )
-            }
-        }
-    }
+    )
 
     /**
      * Wire format for response messages published to Redis.
+     *
+     * Used only for **decoding** incoming messages. For encoding, see [ResponseEnvelopeSerializer].
      */
     @Serializable
     private data class ResponseEnvelope(
         val requestId: SerializableUUID,
         val responseClass: String,
         val responseData: JsonElement
-    ) {
-        companion object {
-            fun forResponse(
-                response: RedisResponse,
-                requestId: UUID,
-                data: JsonElement
-            ): ResponseEnvelope {
-                return ResponseEnvelope(
-                    requestId = requestId,
-                    responseClass = response.javaClass.name,
-                    responseData = data
-                )
+    )
+
+    /**
+     * Encode-only payload pairing a request with its routing metadata.
+     */
+    private data class RequestEnvelopePayload(
+        val requestId: UUID,
+        val requestClass: String,
+        val request: RedisRequest
+    )
+
+    /**
+     * Encode-only payload pairing a response with its routing metadata.
+     */
+    private data class ResponseEnvelopePayload(
+        val requestId: UUID,
+        val responseClass: String,
+        val response: RedisResponse
+    )
+
+    /**
+     * Streaming JSON serializer for outgoing request envelopes.
+     *
+     * Delegates payload encoding directly to the typed [dataSerializer], avoiding the
+     * intermediate [JsonElement] tree allocation that the symmetric data-class based path
+     * would incur. Element names match [RequestEnvelope] so the configured
+     * [kotlinx.serialization.json.JsonNamingStrategy] yields an identical wire format.
+     */
+    @OptIn(ExperimentalSerializationApi::class)
+    private inner class RequestEnvelopeSerializer(
+        private val dataSerializer: KSerializer<Any>
+    ) : KSerializer<RequestEnvelopePayload> {
+        override val descriptor: SerialDescriptor =
+            buildClassSerialDescriptor("RequestEnvelope") {
+                element("requestId", uuidSerializer.descriptor)
+                element<String>("requestClass")
+                element("requestData", dataSerializer.descriptor)
+            }
+
+        override fun serialize(encoder: Encoder, value: RequestEnvelopePayload) {
+            encoder.encodeStructure(descriptor) {
+                encodeSerializableElement(descriptor, 0, uuidSerializer, value.requestId)
+                encodeStringElement(descriptor, 1, value.requestClass)
+                encodeSerializableElement(descriptor, 2, dataSerializer, value.request)
             }
         }
+
+        override fun deserialize(decoder: Decoder): RequestEnvelopePayload =
+            error("RequestEnvelopeSerializer is encode-only")
+    }
+
+    /**
+     * Streaming JSON serializer for outgoing response envelopes. See [RequestEnvelopeSerializer].
+     */
+    @OptIn(ExperimentalSerializationApi::class)
+    private inner class ResponseEnvelopeSerializer(
+        private val dataSerializer: KSerializer<Any>
+    ) : KSerializer<ResponseEnvelopePayload> {
+        override val descriptor: SerialDescriptor =
+            buildClassSerialDescriptor("ResponseEnvelope") {
+                element("requestId", uuidSerializer.descriptor)
+                element<String>("responseClass")
+                element("responseData", dataSerializer.descriptor)
+            }
+
+        override fun serialize(encoder: Encoder, value: ResponseEnvelopePayload) {
+            encoder.encodeStructure(descriptor) {
+                encodeSerializableElement(descriptor, 0, uuidSerializer, value.requestId)
+                encodeStringElement(descriptor, 1, value.responseClass)
+                encodeSerializableElement(descriptor, 2, dataSerializer, value.response)
+            }
+        }
+
+        override fun deserialize(decoder: Decoder): ResponseEnvelopePayload =
+            error("ResponseEnvelopeSerializer is encode-only")
     }
 }
