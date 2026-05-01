@@ -65,6 +65,12 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
     }
     protected val scriptExecutor = LuaScriptExecutor.getInstance(api, scriptRegistry)
 
+    // Pre-computed per-instance constants reused on every Lua script invocation. Reduces
+    // per-op allocations of identical Strings / List<Any> wrappers on the hot path.
+    private val msgDelimiterStr: String by lazy { msgDelimiter }
+    private val streamMaxLengthStr: String by lazy { streamMaxLength.toString() }
+    private val scriptKeys: List<Any> by lazy { listOf(dataKey, streamKey, versionKey) }
+
     @MustBeInvokedByOverriders
     override fun init(): Mono<Void> {
         return stream.fetchLatestStreamId()
@@ -84,21 +90,43 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
     }
 
     private fun processStreamEvent(type: String, msg: String) {
-        val parts = msg.split(msgDelimiter, limit = 3)
-        if (parts.size < 2) {
+        // Parse "version<DELIM>origin<DELIM>payload" without allocating an ArrayList per
+        // message. msgDelimiter is a single character in practice (default: NUL), and the
+        // payload itself may contain further delimiters which are split lazily in the
+        // payload-handling branch below.
+        val delim = msgDelimiter
+        val firstDelim = msg.indexOf(delim)
+        if (firstDelim < 0) {
             log.atWarning()
                 .log(
-                    "Malformed stream message for type %s: expected at least 2 parts but got %d: %s",
+                    "Malformed stream message for type %s: expected at least 2 parts but got 1: %s",
                     type,
-                    parts.size,
                     msg
                 )
             return
         }
+        val secondDelim = msg.indexOf(delim, firstDelim + delim.length)
+        if (secondDelim < 0) {
+            // exactly two parts: version<DELIM>origin (no payload)
+            val versionPart = msg.substring(0, firstDelim)
+            val origin = msg.substring(firstDelim + delim.length)
+            processParsedStreamEvent(type, msg, versionPart, origin, "")
+            return
+        }
 
-        val versionPart = parts[0]
-        val origin = parts[1]
+        val versionPart = msg.substring(0, firstDelim)
+        val origin = msg.substring(firstDelim + delim.length, secondDelim)
+        val payloadPart = msg.substring(secondDelim + delim.length)
+        processParsedStreamEvent(type, msg, versionPart, origin, payloadPart)
+    }
 
+    private fun processParsedStreamEvent(
+        type: String,
+        msg: String,
+        versionPart: String,
+        origin: String,
+        payloadPart: String
+    ) {
         if (versionPart.isBlank()) {
             log.atWarning()
                 .log(
@@ -131,7 +159,6 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
             return
         }
 
-        val payloadPart = if (parts.size >= 3) parts[2] else ""
         val payload = if (payloadPart.isEmpty()) emptyList() else payloadPart.split(msgDelimiter)
 
         if (!applyVersion(version)) return
@@ -147,18 +174,25 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
         eventType: String,
         vararg values: String
     ) {
+        // Build argv as Array<Any> directly to avoid the intermediate ObjectArrayList +
+        // toTypedArray() copy that previously occurred for every Redis op.
+        val argv = arrayOfNulls<Any>(6 + values.size)
+        argv[0] = instanceId
+        argv[1] = msgDelimiterStr
+        argv[2] = streamMaxLengthStr
+        argv[3] = STREAM_FIELD_TYPE
+        argv[4] = STREAM_FIELD_MSG
+        argv[5] = eventType
+        if (values.isNotEmpty()) {
+            System.arraycopy(values, 0, argv, 6, values.size)
+        }
+        @Suppress("UNCHECKED_CAST")
         scriptExecutor.execute<Long>(
             script,
             RScript.Mode.READ_WRITE,
             RScript.ReturnType.LONG,
-            listOf(dataKey, streamKey, versionKey),
-            instanceId,
-            msgDelimiter,
-            streamMaxLength,
-            STREAM_FIELD_TYPE,
-            STREAM_FIELD_MSG,
-            eventType,
-            *values
+            scriptKeys,
+            *(argv as Array<Any>)
         ).subscribe(
             { newVersion ->
                 when (newVersion) {
