@@ -24,6 +24,8 @@ import reactor.core.Disposable
 import reactor.core.publisher.Mono
 import java.lang.reflect.ParameterizedType
 import java.util.*
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.write
@@ -72,10 +74,33 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
     private lateinit var requestDisposable: Disposable
     private lateinit var responseDisposable: Disposable
 
+
+    private val requestResponseHmacKey: ByteArray by lazy {
+        val key = System.getenv(HMAC_ENV_KEY)
+        require(!key.isNullOrBlank()) {
+            "Missing required environment variable $HMAC_ENV_KEY for request/response message authentication."
+        }
+        key.toByteArray(Charsets.UTF_8)
+    }
+
+    private fun signRequestEnvelope(requestId: UUID, requestClass: String, requestData: String): String =
+        hmacSha256Hex("REQ|$requestId|$requestClass|$requestData")
+
+    private fun signResponseEnvelope(requestId: UUID, responseClass: String, responseData: String): String =
+        hmacSha256Hex("RES|$requestId|$responseClass|$responseData")
+
+    private fun hmacSha256Hex(payload: String): String {
+        val mac = Mac.getInstance("HmacSHA256")
+        val key = SecretKeySpec(requestResponseHmacKey, "HmacSHA256")
+        mac.init(key)
+        return mac.doFinal(payload.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+    }
+
     companion object {
         private val log = logger()
         private const val REQUEST_CHANNEL = "surf-redis:requests"
         private const val RESPONSE_CHANNEL = "surf-redis:responses"
+        private const val HMAC_ENV_KEY = "SURF_REDIS_REQUEST_HMAC_KEY"
 
         private val INVOKER_FACTORY = InvokerFactory(
             /* templateClass = */ RedisRequestHandlerInvokerTemplate::class.java,
@@ -129,6 +154,12 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
             return
         }
 
+        val expectedSignature = signRequestEnvelope(envelope.requestId, envelope.requestClass, envelope.requestData)
+        if (envelope.signature != expectedSignature) {
+            log.atWarning().log("Invalid request signature for request ID: ${envelope.requestId} - ignoring request.")
+            return
+        }
+
         val requestClass = requestTypeRegistry[envelope.requestClass]
 
         if (requestClass == null) {
@@ -175,6 +206,12 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
             return
         }
 
+        val expectedSignature = signResponseEnvelope(envelope.requestId, envelope.responseClass, envelope.responseData)
+        if (envelope.signature != expectedSignature) {
+            log.atWarning().log("Invalid response signature for request ID: ${envelope.requestId} - ignoring response.")
+            return
+        }
+
         val responseClass = responseTypeRegistry[envelope.responseClass]
 
         if (responseClass == null) {
@@ -207,7 +244,12 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
         pendingRequests[requestId] = deferred
         responseTypeRegistry[responseType.name] = responseType
 
-        val envelope = RequestEnvelope.forRequest(request, requestId, requestData)
+        val envelope = RequestEnvelope.forRequest(
+            request = request,
+            requestId = requestId,
+            requestData = requestData,
+            signature = signRequestEnvelope(requestId, request::class.java.name, requestData)
+        )
         val message = api.json.encodeToString(envelope)
 
         requestTopic.publish(message).awaitSingle()
@@ -234,7 +276,12 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
      */
     private fun sendResponse(requestId: UUID, response: RedisResponse): Deferred<Long> {
         val responseData = serializeResponse(response) ?: return CompletableDeferred(0L)
-        val envelope = ResponseEnvelope.forResponse(response, requestId, responseData)
+        val envelope = ResponseEnvelope.forResponse(
+            response = response,
+            requestId = requestId,
+            responseData = responseData,
+            signature = signResponseEnvelope(requestId, response::class.java.name, responseData)
+        )
         val message = api.json.encodeToString(envelope)
 
         return responseTopic.publish(message).asDeferred()
@@ -462,18 +509,21 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
     private data class RequestEnvelope(
         val requestId: SerializableUUID,
         val requestClass: String,
-        val requestData: JsonElement
+        val requestData: JsonElement,
+        val signature: String
     ) {
         companion object {
             fun forRequest(
                 request: RedisRequest,
                 requestId: UUID,
-                data: JsonElement
+                data: JsonElement,
+                signature: String
             ): RequestEnvelope {
                 return RequestEnvelope(
                     requestId = requestId,
                     requestClass = request.javaClass.name,
-                    requestData = data
+                    requestData = data,
+                    signature = signature
                 )
             }
         }
@@ -486,18 +536,21 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
     private data class ResponseEnvelope(
         val requestId: SerializableUUID,
         val responseClass: String,
-        val responseData: JsonElement
+        val responseData: JsonElement,
+        val signature: String
     ) {
         companion object {
             fun forResponse(
                 response: RedisResponse,
                 requestId: UUID,
-                data: JsonElement
+                data: JsonElement,
+                signature: String
             ): ResponseEnvelope {
                 return ResponseEnvelope(
                     requestId = requestId,
                     responseClass = response.javaClass.name,
-                    responseData = data
+                    responseData = data,
+                    signature = signature
                 )
             }
         }
