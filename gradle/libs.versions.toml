@@ -1,5 +1,5 @@
 [versions]
-redisson = "4.4.0"
+redisson = "4.6.0"
 netty = "4.2.13.Final"
 
 [libraries]
