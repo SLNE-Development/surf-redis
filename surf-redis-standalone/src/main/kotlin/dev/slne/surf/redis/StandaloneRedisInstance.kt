@@ -46,9 +46,7 @@ class StandaloneRedisInstance(
             password = password
         )
 
-        override fun load() {
-            
-        }
+        override fun load() = Unit
 
         override fun tryExtractPluginNameFromClass(clazz: Class<*>) =
             pluginName
