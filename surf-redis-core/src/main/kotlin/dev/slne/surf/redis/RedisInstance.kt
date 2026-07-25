@@ -47,7 +47,11 @@ abstract class RedisInstance {
                 .factory()
 
             eventLoopGroup =
-                MultiThreadIoEventLoopGroup(16, nettyThreadFactory, TransportInfo.instance.ioHandlerFactory)
+                MultiThreadIoEventLoopGroup(
+                    16,
+                    nettyThreadFactory,
+                    TransportInfo.instance.ioHandlerFactory
+                )
             redissonExecutorService = Executors.newThreadPerTaskExecutor(redissonThreadFactory)
         } finally {
             Thread.currentThread().contextClassLoader = contextClassLoader
@@ -66,15 +70,7 @@ abstract class RedisInstance {
 
     abstract val dataPath: Path
 
-    fun load() {
-        log.atInfo()
-            .log(
-                "Enabling Redis networking using %s transport with Redisson %s",
-                TransportInfo.instance.transportString,
-                RedisConstants.REDISSON_VERSION
-            )
-        RedisConfig.init()
-    }
+    abstract fun load()
 
     fun disable() {
         log.atInfo()
@@ -91,6 +87,8 @@ abstract class RedisInstance {
     }
 
     fun getResourceAsStream(name: String): InputStream? = javaClass.getResourceAsStream(name)
+
+    abstract val config: RedisConfig
 
     abstract fun tryExtractPluginNameFromClass(clazz: Class<*>): String
 

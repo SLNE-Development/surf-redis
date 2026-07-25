@@ -2,6 +2,7 @@ package dev.slne.surf.redis
 
 import com.google.auto.service.AutoService
 import dev.slne.surf.api.core.util.logger
+import dev.slne.surf.redis.config.RedisConfig
 import dev.slne.surf.redis.reflection.JavaPluginLoaderProxy
 import dev.slne.surf.redis.reflection.SerializedPluginDescriptionProxy
 import kotlin.io.path.Path
@@ -13,8 +14,15 @@ class VelocityRedisInstanceImpl : RedisInstance() {
     private val log = logger()
     override val dataPath get() = plugin.dataPath
 
+    override val config: RedisConfig
+        get() = RedisConfig.getConfig()
+
     private val velocityPluginLoader by lazy {
         JavaPluginLoaderProxy.createInstance(plugin.proxy, Path("plugins"))
+    }
+
+    override fun load() {
+        RedisConfig.init()
     }
 
     override fun tryExtractPluginNameFromClass(clazz: Class<*>): String {

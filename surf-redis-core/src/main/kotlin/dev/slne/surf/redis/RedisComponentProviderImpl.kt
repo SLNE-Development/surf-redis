@@ -3,7 +3,6 @@ package dev.slne.surf.redis
 import com.google.auto.service.AutoService
 import dev.slne.surf.redis.cache.*
 import dev.slne.surf.redis.codec.RedisCodec
-import dev.slne.surf.redis.config.RedisConfig
 import dev.slne.surf.redis.event.RedisEventBus
 import dev.slne.surf.redis.event.RedisEventBusImpl
 import dev.slne.surf.redis.internal.RedissonConfigDetails
@@ -59,11 +58,16 @@ class RedisComponentProviderImpl : RedisComponentProvider {
                 useSingleServer()
                     .setConnectionMinimumIdleSize(2)
                     .setConnectionPoolSize(8)
-                    .setClientName(RedisConfig.getConfig().clientName + "-" + details.pluginName)
+                    .setClientName(RedisInstance.get().config.clientName + "-" + details.pluginName)
                     .setPingConnectionInterval(10.seconds.inWholeMilliseconds.toInt())
                     .setConnectTimeout(5.seconds.inWholeMilliseconds.toInt())
                     .setRetryAttempts(10)
-                    .setRetryDelay(EqualJitterDelay(200.milliseconds.toJavaDuration(), 1.seconds.toJavaDuration()))
+                    .setRetryDelay(
+                        EqualJitterDelay(
+                            200.milliseconds.toJavaDuration(),
+                            1.seconds.toJavaDuration()
+                        )
+                    )
                     .setAddress(redisURI.scheme + "://" + redisURI.host + ":" + redisURI.port)
             }
 
@@ -156,7 +160,13 @@ class RedisComponentProviderImpl : RedisComponentProvider {
         ttl: Duration,
         api: RedisApi
     ): SyncValue<T> {
-        return SyncValueImpl(api, id, BinarySyncValueCodec(codec, "SyncValue '$id' value"), defaultValue, ttl)
+        return SyncValueImpl(
+            api,
+            id,
+            BinarySyncValueCodec(codec, "SyncValue '$id' value"),
+            defaultValue,
+            ttl
+        )
     }
 
     override fun <K : Any, V : Any> createSyncMap(
