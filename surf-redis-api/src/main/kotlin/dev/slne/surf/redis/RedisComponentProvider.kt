@@ -125,6 +125,7 @@ interface RedisComponentProvider {
         request.originId = clientId
     }
 
+    @InternalRedisAPI
     companion object : RedisComponentProvider by provider {
         val INSTANCE get() = provider
     }

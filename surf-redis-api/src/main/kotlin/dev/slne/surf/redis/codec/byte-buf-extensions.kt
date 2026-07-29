@@ -69,6 +69,7 @@ fun <T> ByteBuf.writeCollection(collection: Collection<T>, writer: (ByteBuf, T) 
 fun <T, C : MutableCollection<T>> ByteBuf.readCollection(creator: (Int) -> C, reader: (ByteBuf) -> T): C {
     val size = readVarInt()
     checkContainerSize("Collection", size)
+    checkReadableElementBytes("Collection", size)
 
     val collection = creator(size)
     repeat(size) {
@@ -87,6 +88,7 @@ fun <T> ByteBuf.writeArray(array: Array<T>, writer: (ByteBuf, T) -> Unit) {
 fun <T> ByteBuf.readArray(type: Class<T>, reader: (ByteBuf) -> T): Array<T> {
     val length = readVarInt()
     checkContainerSize("Array", length)
+    checkReadableElementBytes("Array", length)
 
     @Suppress("UNCHECKED_CAST")
     val array = java.lang.reflect.Array.newInstance(type, length) as Array<T>
@@ -107,6 +109,14 @@ private fun ByteBuf.readPrimitiveArrayLength(type: String): Int {
     checkContainerSize(type, length)
     return length
 }
+
+/**
+ * Lower-bound guard for containers whose elements are variable width. Every supported element
+ * encoding occupies at least one byte, so a payload claiming more elements than there are readable
+ * bytes is already malformed — rejecting it here avoids sizing a container from an untrusted length
+ * prefix before the first element read fails.
+ */
+private fun ByteBuf.checkReadableElementBytes(type: String, length: Int) = checkReadableArrayBytes(type, length, 1)
 
 private fun ByteBuf.checkReadableArrayBytes(
     type: String,
@@ -267,6 +277,7 @@ fun ByteBuf.writeVarIntArray(array: IntArray) {
 
 fun ByteBuf.readVarIntArray(): IntArray {
     val length = readPrimitiveArrayLength("VarIntArray")
+    checkReadableElementBytes("VarIntArray", length)
 
     return IntArray(length) {
         readVarInt()
@@ -301,6 +312,7 @@ fun <K, V, M : MutableMap<K, V>> ByteBuf.readMap(
 ): M {
     val size = readVarInt()
     checkContainerSize("Map", size)
+    checkReadableElementBytes("Map", size)
 
     val map = creator(size)
 
@@ -426,6 +438,7 @@ fun ByteBuf.writeVarIntList(list: IntList) {
 fun ByteBuf.readVarIntList(): IntArrayList {
     val size = readVarInt()
     checkContainerSize("IntList", size)
+    checkReadableElementBytes("IntList", size)
 
     val list = IntArrayList(size)
 

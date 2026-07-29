@@ -43,6 +43,7 @@ class RedisComponentProviderImpl : RedisComponentProvider {
         val redisURI = details.redisURI
 
         val config = Config()
+            .setUsername(redisURI.username)
             .setPassword(redisURI.password)
             .setExecutor(redissonExecutorService)
             .setTransportMode(TransportInfo.instance.redissonTransportMode)

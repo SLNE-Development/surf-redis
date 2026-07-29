@@ -12,6 +12,7 @@ import org.redisson.api.DeletedObjectListener
 import org.redisson.api.ExpiredObjectListener
 import org.redisson.client.codec.StringCodec
 import reactor.core.publisher.Mono
+import java.util.*
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration
 
@@ -95,9 +96,9 @@ class SyncValueImpl<T : Any> internal constructor(
     }
 
     override fun loadFromRemote0(): Mono<SimpleVersionedSnapshot<String?>> = Mono.zip(
-        bucket.get(),
+        bucket.get().map { Optional.of(it) }.defaultIfEmpty(Optional.empty()),
         versionCounter.get().onErrorReturn(0L)
-    ).map { SimpleVersionedSnapshot.fromTuple(it) }
+    ).map { SimpleVersionedSnapshot(it.t1.orElse(null), it.t2) }
 
     override fun overrideFromRemote(raw: SimpleVersionedSnapshot<String?>) {
         val snapshotValue = raw.value

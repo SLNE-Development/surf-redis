@@ -440,7 +440,19 @@ class SimpleSetRedisCacheImpl<T : Any>(
                 for (id in chunk) {
                     launch {
                         semaphore.withPermit {
-                            val element = getCachedById(id)
+                            var element = getCachedById(id)
+
+                            if (element == null) {
+                                val existsInRedis = (api.redissonReactive.keys
+                                    .countExists(valueRedisKey(id.trim()))
+                                    .awaitSingleOrNull() ?: 0L) > 0L
+
+                                if (existsInRedis) {
+                                    nearValues.invalidate(id.trim())
+                                    element = getCachedById(id)
+                                }
+                            }
+
                             if (element == null) {
                                 indexSet.remove(id).awaitSingleOrNull()
                                 changed.set(true)

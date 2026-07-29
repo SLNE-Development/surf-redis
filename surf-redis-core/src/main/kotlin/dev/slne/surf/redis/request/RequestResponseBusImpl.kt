@@ -195,8 +195,8 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
         val message = api.json.encodeToString(envelope)
 
         try {
-            requestTopic.publish(message).awaitSingle()
             return withTimeout(timeoutMs.milliseconds) {
+                requestTopic.publish(message).awaitSingle()
                 val response = deferred.await()
                 responseType.cast(response)
             }

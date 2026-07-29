@@ -17,7 +17,7 @@ local tombstone  = ARGV[8]
 -- Validate index
 local old        = redis.call('LINDEX', dataKey, idx)
 if old == false then
-    return 0
+    return -1
 end
 
 -- Set tombstone at index, remove it, increment version, add message to stream
