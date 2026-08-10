@@ -168,7 +168,7 @@ class SyncListImpl<T : Any> internal constructor(
     }
 
     override fun loadFromRemote0(): Mono<SimpleVersionedSnapshot<List<String>>> = Mono.zip(
-        remoteList.readAll(),
+        remoteList.readAll().defaultIfEmpty(emptyList()),
         versionCounter.get().onErrorReturn(0L)
     ).map { SimpleVersionedSnapshot.fromTuple(it) }
 

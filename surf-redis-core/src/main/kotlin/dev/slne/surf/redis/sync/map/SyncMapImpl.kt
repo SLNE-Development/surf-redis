@@ -138,7 +138,7 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
     }
 
     override fun loadFromRemote0(): Mono<SimpleVersionedSnapshot<Map<String, String>>> = Mono.zip(
-        remoteMap.readAllMap(),
+        remoteMap.readAllMap().defaultIfEmpty(emptyMap()),
         versionCounter.get().onErrorReturn(0L)
     ).map { SimpleVersionedSnapshot.fromTuple(it) }
 

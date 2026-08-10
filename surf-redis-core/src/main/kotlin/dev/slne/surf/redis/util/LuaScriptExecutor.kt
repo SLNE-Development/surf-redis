@@ -1,5 +1,6 @@
 package dev.slne.surf.redis.util
 
+import com.github.benmanes.caffeine.cache.Cache
 import com.github.benmanes.caffeine.cache.Caffeine
 import com.github.benmanes.caffeine.cache.LoadingCache
 import dev.slne.surf.redis.RedisApi
@@ -15,8 +16,9 @@ class LuaScriptExecutor private constructor(private val api: RedisApi, private v
     private val scriptShas = ConcurrentHashMap<String, Mono<String>>()
     private val script by lazy { api.redissonReactive.getScript(StringCodec.INSTANCE) }
 
-    private fun getSha(id: String): Mono<String> = scriptShas.computeIfAbsent(id) {
-        script.scriptLoad(registry.get(id)).cache()
+    private fun getSha(id: String): Mono<String> = scriptShas.computeIfAbsent(id) { key ->
+        script.scriptLoad(registry.get(id))
+            .cacheInvalidateIf { false }
     }
 
     fun <R : Any> execute(
@@ -25,37 +27,54 @@ class LuaScriptExecutor private constructor(private val api: RedisApi, private v
         returnType: RScript.ReturnType,
         keys: List<Any>,
         vararg values: Any,
-        tries: Int = 3
+        attempts: Int = 3
     ): Mono<R> {
-        return Mono.defer { getSha(id) }
-            .flatMap { sha -> script.evalSha<R>(mode, sha, returnType, keys, *values) }
-            .doOnError(RedisNoScriptException::class.java) { scriptShas.remove(id) }
-            .retryWhen(
-                Retry.max(tries.toLong())
-                    .filter { it is RedisNoScriptException }
-            )
+        require(attempts >= 1) { "attempts must be at least 1" }
+
+        val execution = Mono.defer {
+            val cachedSha = getSha(id)
+
+            cachedSha.flatMap { sha ->
+                script.evalSha<R>(
+                    mode,
+                    sha,
+                    returnType,
+                    keys,
+                    *values
+                ).doOnError(RedisNoScriptException::class.java) {
+                    scriptShas.remove(id, cachedSha)
+                }
+            }
+        }
+
+        if (attempts == 1) {
+            return execution
+        }
+
+        return execution.retryWhen(
+            Retry.max(attempts - 1L)
+                .filter(RedisNoScriptException::class.java::isInstance)
+                .onRetryExhaustedThrow { _, signal ->
+                    signal.failure()
+                }
+        )
     }
 
     companion object {
-        /**
-         * A cache that maps a Redis API instance to a nested cache, which links LuaScriptRegistry objects
-         * to their corresponding LuaScriptExecutor instances. The outer cache is keyed by `RedisApi`, while
-         * the inner cache is keyed by `LuaScriptRegistry`. Both caches use weak references for their key storage.
-         * This design ensures efficient memory usage and avoids retaining unnecessary references to keys.
-         */
         private val byApi = Caffeine.newBuilder()
             .weakKeys()
-            .weakValues()
-            .build<RedisApi, LoadingCache<LuaScriptRegistry, LuaScriptExecutor>> { api ->
+            .build<RedisApi, Cache<LuaScriptRegistry, LuaScriptExecutor>>()
+
+
+        fun getInstance(api: RedisApi, registry: LuaScriptRegistry): LuaScriptExecutor {
+            val byRegistry = byApi.get(api) {
                 Caffeine.newBuilder()
                     .weakKeys()
                     .weakValues()
-                    .build { registry ->
-                        LuaScriptExecutor(api, registry)
-                    }
+                    .build()
             }
 
-
-        fun getInstance(api: RedisApi, registry: LuaScriptRegistry) = byApi.get(api).get(registry)
+            return byRegistry.get(registry) { LuaScriptExecutor(api, registry) }
+        }
     }
 }

@@ -18,7 +18,8 @@ import reactor.core.publisher.Mono
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration
-import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.toJavaDuration
 import org.redisson.client.codec.StringCodec.INSTANCE as StringCodec
 
@@ -95,7 +96,7 @@ class SimpleRedisCacheImpl<K : Any, V : Any>(
         .expireAfterAccess(ttl)
         .build<String, CacheEntry<V>>()
     private val refreshGate = Caffeine.newBuilder()
-        .expireAfterWrite(5.seconds)
+        .expireAfterWrite((ttl / 4).coerceIn(250.milliseconds, 1.hours))
         .maximumSize(100_000)
         .build<String, Unit>()
 

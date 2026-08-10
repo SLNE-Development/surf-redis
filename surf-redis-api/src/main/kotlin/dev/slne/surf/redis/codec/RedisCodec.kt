@@ -14,6 +14,15 @@ import io.netty.buffer.ByteBuf
  * anonymous or generated codec classes). Increment [version] whenever the encoded representation
  * changes incompatibly.
  *
+ * ### Generic codecs must override [codecId]
+ *
+ * The default [codecId] is the codec's class name, which is identical for every type argument of a
+ * generic codec: `JsonKotlinCodec<UserProfileV1>` and `JsonKotlinCodec<UserProfileV2>` produce the
+ * same identity. A synchronized structure only compares this identity, so it cannot detect that the
+ * stored payload type changed and will decode old data into the new type - silently defaulting any
+ * removed or renamed field. If a codec class is reused for more than one value type, override
+ * [codecId] to include the value type (for example, the serializer's serial name).
+ *
  * @param T value type handled by this codec
  */
 interface RedisCodec<T : Any> {

@@ -330,6 +330,7 @@ class RedisApi private constructor(
         private fun createJson(serializerModule: SerializersModule) = Json {
             namingStrategy = JsonNamingStrategy.SnakeCase
             encodeDefaults = true
+            ignoreUnknownKeys = true
             serializersModule = SerializersModule {
                 include(SurfSerializerModule.all.overwriteWith(SerializersModule {
                     contextual(JavaUUIDStringSerializer) // UUID as string rather than byte array

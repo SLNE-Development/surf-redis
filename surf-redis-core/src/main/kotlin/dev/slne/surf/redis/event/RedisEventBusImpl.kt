@@ -80,6 +80,7 @@ class RedisEventBusImpl(private val api: RedisApi) : RedisEventBus, RedisEventCo
     companion object {
         private val log = logger()
         private const val REDIS_CHANNEL = "surf-redis:events"
+        private const val MAX_DIAGNOSTIC_KEYS = 512
 
         private val INVOKER_FACTORY = InvokerFactory(
             /* templateClass = */ RedisEventInvokerTemplate::class.java,
@@ -145,6 +146,16 @@ class RedisEventBusImpl(private val api: RedisApi) : RedisEventBus, RedisEventCo
 
         val customCodec = codecRegistry.codecForPublishing(event.javaClass)
         if (customCodec != null) {
+            if (recordDiagnostic("binary-route:${customCodec.eventId}")) {
+                log.atInfo().log(
+                    "Redis event '%s' is published on the binary channel '%s' (codec '%s' v%s); peers " +
+                            "that do not subscribe to that channel will not receive it",
+                    customCodec.eventType.name,
+                    CustomEventPacketCodec.CHANNEL,
+                    customCodec.codec.codecId,
+                    customCodec.version
+                )
+            }
             return customTopic
                 .publish(CustomEventPacketCodec.outbound(event, customCodec))
                 .onErrorResume(RedisCodecException::class.java) { failure ->
@@ -166,6 +177,10 @@ class RedisEventBusImpl(private val api: RedisApi) : RedisEventBus, RedisEventCo
         val message = api.json.encodeToString(envelope)
 
         return topic.publish(message).asDeferred()
+    }
+
+    private fun recordDiagnostic(key: String): Boolean {
+        return missingCodecDiagnostics.size < MAX_DIAGNOSTIC_KEYS && missingCodecDiagnostics.add(key)
     }
 
     override fun registerListener(listener: Any) {
@@ -276,11 +291,15 @@ class RedisEventBusImpl(private val api: RedisApi) : RedisEventBus, RedisEventCo
                 }
 
                 is CustomEventPacketCodec.DecodeResult.Failure -> {
+                    val exception = result.exception
+                    if (!recordDiagnostic("failure:${exception.javaClass.name}:${exception.message}")) {
+                        return
+                    }
                     log.atWarning()
-                        .withCause(result.exception)
+                        .withCause(exception)
                         .log(
                             "Unable to decode custom Redis event packet: %s",
-                            result.exception.message
+                            exception.message
                         )
                 }
             }

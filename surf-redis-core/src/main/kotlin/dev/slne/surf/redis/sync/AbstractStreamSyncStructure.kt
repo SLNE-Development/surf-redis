@@ -250,6 +250,7 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
             { e ->
                 log.atWarning().withCause(e)
                     .log("Error executing Lua script '$script' for '$id' ($streamKey)")
+                requestResync()
             }
         )
     }
@@ -285,6 +286,7 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
             { e ->
                 log.atWarning().withCause(e)
                     .log("Error executing batched Lua script '$script' for '$id' ($streamKey)")
+                requestResync()
             }
         )
     }
@@ -361,7 +363,15 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
         if (!resyncInFlight.compareAndSet(false, true)) return
 
         loadFromRemote()
-            .doFinally { resyncInFlight.set(false) }
+            .doOnError {e ->
+                log.atWarning()
+                    .withCause(e)
+                    .log("Resync failed for '$id' ($streamKey)")
+            }
+            .doFinally {
+                resyncInFlight.set(false)
+            }
+            .onErrorComplete()
             .subscribe()
     }
 

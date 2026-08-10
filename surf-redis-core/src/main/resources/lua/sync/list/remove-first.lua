@@ -26,4 +26,4 @@ if removed == 1 then
     return ver
 end
 
-return 0
+return -1
