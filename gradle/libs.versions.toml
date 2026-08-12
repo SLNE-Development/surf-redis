@@ -1,5 +1,5 @@
 [versions]
-redisson = "4.6.1"
+redisson = "4.7.0"
 netty = "4.2.15.Final" # https://github.com/redisson/redisson/blob/master/pom.xml#L195
 lincheck = "3.6"
 
