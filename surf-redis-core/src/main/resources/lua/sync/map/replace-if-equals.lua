@@ -9,24 +9,24 @@ local fieldType  = ARGV[4]
 local fieldMsg   = ARGV[5]
 local eventType  = ARGV[6]
 
-local idx        = tonumber(ARGV[7])
+local key        = ARGV[7]
 local expected   = ARGV[8]
 local newValue   = ARGV[9]
 
-local current    = redis.call('LINDEX', dataKey, idx)
+local current    = redis.call('HGET', dataKey, key)
 
 if current == false or current ~= expected then
-    return -1
+    return 0
 end
 
-redis.call('LSET', dataKey, idx, newValue)
+redis.call('HSET', dataKey, key, newValue)
 
 local version = redis.call('INCR', versionKey)
 
 local payload =
-    tostring(idx) .. delim ..
-    current .. delim ..
-    newValue
+    key .. delim ..
+    newValue .. delim ..
+    current
 
 local message =
     tostring(version) .. delim ..
