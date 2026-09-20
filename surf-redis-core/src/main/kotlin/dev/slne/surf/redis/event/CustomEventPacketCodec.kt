@@ -48,7 +48,7 @@ internal object CustomEventPacketCodec {
 
     private fun encode(event: RedisEvent, registration: EventCodecRegistration): ByteBuf {
         val initialCapacity = registration.packetSizeEstimate.coerceIn(1, MAX_PACKET_SIZE)
-        val buffer = ByteBufAllocator.DEFAULT.buffer(initialCapacity, MAX_PACKET_SIZE)
+        val buffer = ByteBufAllocator.DEFAULT.heapBuffer(initialCapacity, MAX_PACKET_SIZE)
         try {
             buffer.writeInt(MAGIC)
             buffer.writeByte(PROTOCOL_VERSION)
