@@ -513,23 +513,21 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
         val origin: String,
         private val encodedPayload: String
     ) {
-        fun payload(index: Int): String {
+        fun payload(index: Int): String = payloadOrNull(index)
+            ?: throw IndexOutOfBoundsException("Missing stream payload at index $index")
+
+        fun payloadOrNull(index: Int): String? {
             require(index >= 0) { "Payload index must not be negative: $index" }
             var start = 0
             repeat(index) {
                 val delimiter = encodedPayload.indexOf(MESSAGE_DELIMITER, start)
-                if (delimiter < 0) throw IndexOutOfBoundsException("Missing stream payload at index $index")
+                if (delimiter < 0) return null
                 start = delimiter + 1
             }
             val end = encodedPayload.indexOf(MESSAGE_DELIMITER, start)
             return if (end < 0) encodedPayload.substring(start) else encodedPayload.substring(start, end)
         }
 
-        fun payloadOrNull(index: Int): String? = try {
-            payload(index)
-        } catch (_: IndexOutOfBoundsException) {
-            null
-        }
     }
 
     protected data class VersionRange(

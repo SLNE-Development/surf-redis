@@ -1,11 +1,82 @@
 package dev.slne.surf.redis.event
 
 import dev.slne.surf.redis.codec.RedisCodecException
+import dev.slne.surf.redis.codec.readString
+import dev.slne.surf.redis.codec.writeString
 import io.netty.buffer.ByteBuf
 import io.netty.buffer.Unpooled
+import java.nio.ReadOnlyBufferException
 import kotlin.test.*
 
 class CustomEventPacketCodecTest {
+    @Test
+    fun `string payloads remain read only and independently decodable after transport release`() {
+        for (text in listOf("", "a".repeat(65_536), "Grüße 世界 🌊", "\u0000")) {
+            var decodedBuffer: ByteBuf? = null
+            val codec = object : RedisEventCodec<TextEvent> {
+                override val eventId = "test:text-event"
+                override fun encode(buffer: ByteBuf, value: TextEvent) = buffer.writeString(value.text, 100_000)
+                override fun decode(buffer: ByteBuf): TextEvent {
+                    decodedBuffer = buffer
+                    assertTrue(buffer.isReadOnly)
+                    assertFalse(buffer.hasArray())
+                    assertFailsWith<ReadOnlyBufferException> { buffer.setByte(0, 0) }
+                    assertFailsWith<ReadOnlyBufferException> { buffer.array() }
+                    assertFailsWith<IndexOutOfBoundsException> {
+                        buffer.toString(buffer.capacity(), 1, Charsets.UTF_8)
+                    }
+                    return TextEvent(buffer.readString(100_000))
+                }
+            }
+            val registry = EventCodecRegistry().apply {
+                registerExplicit(TextEvent::class.java, codec)
+                freeze()
+            }
+            val registration = registry.codecForEventId(codec.eventId)!!
+            val wire = CustomEventPacketCodec.redisCodec.valueEncoder.encode(
+                CustomEventPacketCodec.outbound(TextEvent(text), registration)
+            )
+            val inbound = try {
+                assertIs<CustomEventPacketCodec.InboundMessage.Packet>(
+                    CustomEventPacketCodec.redisCodec.valueDecoder.decode(wire, null)
+                )
+            } finally {
+                wire.release()
+            }
+            repeat(2) {
+                val decoded = assertIs<CustomEventPacketCodec.DecodeResult.Event>(
+                    inbound.decode(registry::codecForEventId)
+                )
+                assertEquals(text, (decoded.event as TextEvent).text)
+                assertEquals(0, decodedBuffer!!.refCnt())
+            }
+        }
+    }
+
+    @Test
+    fun `unread payload still fails and releases the decoding buffer`() {
+        var decodedBuffer: ByteBuf? = null
+        val registry = EventCodecRegistry().apply {
+            registerExplicit(PacketEvent::class.java, object : RedisEventCodec<PacketEvent> {
+                override val eventId = PacketCodec.EVENT_ID
+                override fun encode(buffer: ByteBuf, value: PacketEvent) { buffer.writeInt(value.value) }
+                override fun decode(buffer: ByteBuf): PacketEvent {
+                    decodedBuffer = buffer
+                    return PacketEvent(0)
+                }
+            })
+            freeze()
+        }
+        val wire = encode(PacketEvent(7), registry.codecForEventId(PacketCodec.EVENT_ID)!!)
+        try {
+            val result = assertIs<CustomEventPacketCodec.DecodeResult.Failure>(decode(wire, registry))
+            assertTrue(result.exception.message.orEmpty().contains("left 4 unread bytes"))
+            assertEquals(0, decodedBuffer!!.refCnt())
+        } finally {
+            wire.release()
+        }
+    }
+
     @Test
     fun `custom event packet round trips on the isolated binary protocol`() {
         val registry = registry(PacketCodec(version = 4))
@@ -201,6 +272,8 @@ class CustomEventPacketCodecTest {
         registerExplicit(PacketEvent::class.java, codec)
         freeze()
     }
+
+    private class TextEvent(val text: String) : RedisEvent()
 
     private class PacketEvent(
         val value: Int,

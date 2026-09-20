@@ -72,6 +72,7 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
     }
 
     private val map = Object2ObjectOpenHashMap<K, V>()
+    private var mutationVersion = 0L
     private val remoteMap by lazy {
         api.redissonReactive.getMap<String, String>(
             dataKey,
@@ -101,7 +102,7 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
     override fun isEmpty() = lock.read { map.isEmpty() }
 
     override fun put(key: K, value: V): V? {
-        val previous = lock.write {
+        val previous = mutate {
             map.put(key, value)
         }
 
@@ -112,7 +113,7 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
     }
 
     override fun remove(key: K): V? {
-        val old = lock.write { map.remove(key) } ?: return null
+        val old = mutate { map.remove(key) } ?: return null
 
         writeToRemote(REMOVE_SCRIPT, EVENT_REMOVE, encodeKey(key))
         notifyListeners(SyncMapChange.Removed(key, old))
@@ -123,7 +124,7 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
     override fun removeIf(predicate: (K, V) -> Boolean): Boolean {
         val keysToRemove = ObjectArrayList<K>()
         val removedLocal = ObjectArrayList<Pair<K, V>>()
-        lock.write {
+        mutate {
             val it = map.object2ObjectEntrySet().fastIterator()
             while (it.hasNext()) {
                 val e = it.next()
@@ -143,7 +144,7 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
     }
 
     override fun clear() {
-        val had = lock.write {
+        val had = mutate {
             val h = map.isNotEmpty()
             map.clear()
             h
@@ -187,7 +188,7 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
     }
 
     override suspend fun putAndAwait(key: K, value: V): V? {
-        val previous = lock.write {
+        val previous = mutate {
             map.put(key, value)
         }
 
@@ -208,7 +209,7 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
     }
 
     override suspend fun removeAndAwait(key: K): V? {
-        val old = lock.write {
+        val old = mutate {
             map.remove(key)
         } ?: return null
 
@@ -229,7 +230,7 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
         val keysToRemove = ObjectArrayList<K>()
         val removedLocal = ObjectArrayList<Pair<K, V>>()
 
-        lock.write {
+        mutate {
             val iterator = map.object2ObjectEntrySet().fastIterator()
 
             while (iterator.hasNext()) {
@@ -265,7 +266,7 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
     }
 
     override suspend fun clearAndAwait() {
-        val hadEntries = lock.write {
+        val hadEntries = mutate {
             val had = map.isNotEmpty()
             map.clear()
             had
@@ -402,7 +403,7 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
     override fun overrideFromRemote(raw: SimpleVersionedSnapshot<Map<String, String>>) {
         val decoded = decodeSnapshot(raw.value)
 
-        lock.write {
+        mutate {
             map.clear()
             map.putAll(decoded)
         }
@@ -439,25 +440,8 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
         val decodedVal = decodeValue(encodedVal)
         val decodedOldVal = encodedOldVal?.let { decodeValue(it) }
 
-        val ok = lock.write {
-            val cur = map[decodedKey]
-
-            if (encodedOldVal == null) {
-                if (cur != null) {
-                    return@write false
-                }
-            } else {
-                if (cur == null) {
-                    return@write false
-                }
-
-                if (encodeValue(cur) != encodedOldVal) {
-                    return@write false
-                }
-            }
-
+        val ok = applyRemoteChange(decodedKey, encodedOldVal) {
             map[decodedKey] = decodedVal
-            true
         }
 
         if (!ok) return requestResync()
@@ -471,16 +455,8 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
         val decodedKey = decodeKey(encodedKey)
         val decodedOldVal = decodeValue(encodedOldVal)
 
-        val ok = lock.write {
-            val current = map[decodedKey]
-                ?: return@write false
-
-            if (encodeValue(current) != encodedOldVal) {
-                return@write false
-            }
-
+        val ok = applyRemoteChange(decodedKey, encodedOldVal) {
             map.remove(decodedKey)
-            true
         }
         if (!ok) return requestResync()
         notifyListeners(SyncMapChange.Removed(decodedKey, decodedOldVal))
@@ -488,13 +464,42 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
 
     @Suppress("UNUSED_PARAMETER")
     private fun onCleared(data: StreamEventData) {
-        val had = lock.write {
+        val had = mutate {
             val h = map.isNotEmpty()
             map.clear()
             h
         }
 
         if (had) notifyListeners(SyncMapChange.Cleared())
+    }
+
+    private inline fun <T> mutate(action: () -> T): T = lock.write {
+        mutationVersion++
+        action()
+    }
+
+    private inline fun applyRemoteChange(key: K, encodedOldValue: String?, change: () -> Unit): Boolean {
+        val observedVersion: Long
+        val matches = lock.read {
+            observedVersion = mutationVersion
+            matchesEncodedValue(key, encodedOldValue)
+        }
+
+        return lock.write {
+            val stillMatches = if (mutationVersion == observedVersion) matches
+                else matchesEncodedValue(key, encodedOldValue)
+            if (!stillMatches) return@write false
+
+            mutationVersion++
+            change()
+            true
+        }
+    }
+
+    private fun matchesEncodedValue(key: K, encodedValue: String?): Boolean {
+        val current = map[key]
+        return if (encodedValue == null) current == null
+            else current != null && encodeValue(current) == encodedValue
     }
 
     private fun encodeKey(key: K): String = keyCodec.encode(key)

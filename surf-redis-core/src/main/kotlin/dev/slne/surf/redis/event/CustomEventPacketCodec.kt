@@ -3,11 +3,13 @@ package dev.slne.surf.redis.event
 import dev.slne.surf.redis.codec.*
 import io.netty.buffer.ByteBuf
 import io.netty.buffer.ByteBufAllocator
+import io.netty.buffer.ReadOnlyByteBuf
 import io.netty.buffer.Unpooled
 import org.redisson.client.codec.BaseCodec
 import org.redisson.client.codec.Codec
 import org.redisson.client.protocol.Decoder
 import org.redisson.client.protocol.Encoder
+import java.nio.charset.Charset
 
 internal object CustomEventPacketCodec {
     const val CHANNEL = "surf-redis:events:binary"
@@ -133,7 +135,7 @@ internal object CustomEventPacketCodec {
                     return DecodeResult.VersionMismatch(registration, codecVersion)
                 }
 
-                val buffer = Unpooled.wrappedBuffer(payload).asReadOnly()
+                val buffer = ReadOnlyPayloadBuffer(payload)
                 try {
                     val event = try {
                         registration.codec.decode(buffer)
@@ -163,6 +165,12 @@ internal object CustomEventPacketCodec {
         }
 
         data class Malformed(val exception: RedisCodecException) : InboundMessage
+    }
+
+    @Suppress("DEPRECATION")
+    private class ReadOnlyPayloadBuffer(payload: ByteArray) : ReadOnlyByteBuf(Unpooled.wrappedBuffer(payload)) {
+        override fun toString(index: Int, length: Int, charset: Charset): String =
+            unwrap().toString(index, length, charset)
     }
 
     sealed interface DecodeResult {

@@ -50,6 +50,10 @@ dependencies {
     testImplementation("org.jetbrains.kotlinx:kotlinx-serialization-json-jvm:1.11.0")
     testImplementation(libs.lincheck)
     testRuntimeOnly("it.unimi.dsi:fastutil:8.5.19")
+    testRuntimeOnly("com.google.flogger:flogger:0.9")
+    testRuntimeOnly("com.google.flogger:flogger-system-backend:0.9")
+    testRuntimeOnly("net.kyori:adventure-api:5.2.0")
+    testRuntimeOnly("com.github.ben-manes.caffeine:caffeine:3.2.4")
 
     add("jmhImplementation", "org.jetbrains.kotlinx:kotlinx-serialization-json-jvm:1.11.0")
 }
