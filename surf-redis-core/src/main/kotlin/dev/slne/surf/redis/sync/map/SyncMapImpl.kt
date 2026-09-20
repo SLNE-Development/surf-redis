@@ -71,7 +71,7 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
         }
     }
 
-    private val map = Object2ObjectOpenHashMap<K, V>()
+    private var map = Object2ObjectOpenHashMap<K, V>()
     private var mutationVersion = 0L
     private val remoteMap by lazy {
         api.redissonReactive.getMap<String, String>(
@@ -404,8 +404,7 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
         val decoded = decodeSnapshot(raw.value)
 
         mutate {
-            map.clear()
-            map.putAll(decoded)
+            map = decoded
         }
 
         super.overrideFromRemote(raw)

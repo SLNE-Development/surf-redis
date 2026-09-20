@@ -114,7 +114,6 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
             )
         }
 
-        val origin = msg.substring(firstDelim + 1, secondDelim)
         val version = parseVersion(msg, firstDelim)
 
         if (version == null) {
@@ -127,7 +126,8 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
             return
         }
 
-        if (origin.isBlank()) {
+        val hasEmptyOriginPart = (firstDelim + 1 until secondDelim).all { msg[it].isWhitespace() }
+        if (hasEmptyOriginPart) {
             log.atWarning()
                 .log(
                     "Malformed stream message for type %s: empty origin part in message: %s",
@@ -137,10 +137,15 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
             return
         }
 
-        val payload = msg.substring(secondDelim + 1)
-
         if (!applyVersion(version)) return
-        if (origin == instanceId) return
+
+        val lengthBetweenDelimiters = secondDelim - firstDelim - 1
+        if (lengthBetweenDelimiters == instanceId.length &&
+            msg.regionMatches(firstDelim + 1, instanceId, 0, instanceId.length)
+        ) return // Ignore own events
+
+        val origin = msg.substring(firstDelim + 1, secondDelim)
+        val payload = msg.substring(secondDelim + 1)
 
         onStreamEvent(type, StreamEventData(version, origin, payload))
     }

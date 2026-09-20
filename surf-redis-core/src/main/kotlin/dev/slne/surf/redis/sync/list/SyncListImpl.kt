@@ -72,7 +72,7 @@ class SyncListImpl<T : Any> internal constructor(
     }
 
 
-    private val list = ObjectArrayList<T>()
+    private var list = ObjectArrayList<T>()
 
     // Counter for unique removal tombstones.
     private val tombstoneSeq = AtomicLong(0L)
@@ -161,22 +161,40 @@ class SyncListImpl<T : Any> internal constructor(
         return old
     }
 
-    override fun removeIf(predicate: (T) -> Boolean): Boolean {
-        val removedValues = lock.write {
-            val removed = ObjectArrayList<T>()
-            val iterator = list.iterator()
+    /**
+     * Drops every local element matching [predicate] and returns the dropped elements in index order.
+     */
+    private inline fun removeMatching(predicate: (T) -> Boolean): ObjectArrayList<T> = lock.write {
+        val removed = ObjectArrayList<T>()
+        val elements = list.elements()
+        val size = list.size
+        var index = 0
+        var kept = 0
 
-            while (iterator.hasNext()) {
-                val value = iterator.next()
+        try {
+            while (index < size) {
+                val value = elements[index]
 
                 if (predicate(value)) {
-                    iterator.remove()
                     removed.add(value)
+                } else {
+                    elements[kept++] = value
                 }
-            }
 
-            removed
+                index++
+            }
+        } finally {
+            if (kept != index) {
+                System.arraycopy(elements, index, elements, kept, size - index)
+                list.size(kept + size - index)
+            }
         }
+
+        removed
+    }
+
+    override fun removeIf(predicate: (T) -> Boolean): Boolean {
+        val removedValues = removeMatching(predicate)
 
         if (removedValues.isEmpty) {
             return false
@@ -336,21 +354,7 @@ class SyncListImpl<T : Any> internal constructor(
     }
 
     override suspend fun removeIfAndAwait(predicate: (T) -> Boolean): Boolean {
-        val removedValues = lock.write {
-            val removed = ObjectArrayList<T>()
-            val iterator = list.iterator()
-
-            while (iterator.hasNext()) {
-                val value = iterator.next()
-
-                if (predicate(value)) {
-                    iterator.remove()
-                    removed.add(value)
-                }
-            }
-
-            removed
-        }
+        val removedValues = removeMatching(predicate)
 
         if (removedValues.isEmpty) {
             return false
@@ -376,8 +380,7 @@ class SyncListImpl<T : Any> internal constructor(
     override fun overrideFromRemote(raw: SimpleVersionedSnapshot<List<String>>) {
         val elements = decodeSnapshot(raw.value)
         lock.write {
-            list.clear()
-            list.addAll(elements)
+            list = elements
         }
         super.overrideFromRemote(raw)
     }

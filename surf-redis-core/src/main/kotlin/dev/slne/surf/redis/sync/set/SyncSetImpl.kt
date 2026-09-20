@@ -58,7 +58,7 @@ class SyncSetImpl<T : Any> internal constructor(
         }
     }
 
-    private val set = ObjectOpenHashSet<T>()
+    private var set = ObjectOpenHashSet<T>()
 
     private val remoteSet by lazy {
         api.redissonReactive.getSet<String>(
@@ -327,8 +327,7 @@ class SyncSetImpl<T : Any> internal constructor(
     override fun overrideFromRemote(raw: SimpleVersionedSnapshot<Set<String>>) {
         val decoded = decodeSnapshot(raw.value)
         lock.write {
-            set.clear()
-            set.addAll(decoded)
+            set = decoded
         }
         super.overrideFromRemote(raw)
     }

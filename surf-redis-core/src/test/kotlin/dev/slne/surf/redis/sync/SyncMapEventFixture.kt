@@ -26,31 +26,34 @@ internal class SyncMapEventFixture : AutoCloseable {
 
     var beforeEncode: (Value) -> Unit = {}
     var afterEncode: () -> Unit = {}
+    var scriptResult: List<Any> = listOf("key", "snapshot", "10")
+    var onScriptArguments: (Array<*>) -> Unit = {}
     val resyncs = AtomicInteger()
     val changes = mutableListOf<SyncMapChange<String, Value>>()
     private val config = Config().apply { useSingleServer().address = "redis://127.0.0.1:6379" }
     private val key = RedissonConnectionKey.of(RedisURI("redis://127.0.0.1:6379"))
-    private val api = RedisApi::class.java.getDeclaredConstructor(
+    val api = RedisApi::class.java.getDeclaredConstructor(
         Config::class.java, RedissonConnectionKey::class.java, String::class.java, Json::class.java
     ).apply { isAccessible = true }.newInstance(config, key, "map-event-test", Json)
 
-    private val script = proxy<RScriptReactive> { name ->
+    private val script = proxy<RScriptReactive> { name, args ->
         when (name) {
             "scriptLoad" -> Mono.just("snapshot-sha")
             "evalSha" -> {
                 resyncs.incrementAndGet()
-                Mono.just(listOf("key", "snapshot", "10"))
+                onScriptArguments(args!!.last() as Array<*>)
+                Mono.just(scriptResult)
             }
             else -> error("Unexpected script operation $name")
         }
     }
-    private val reactive = proxy<RedissonReactiveClient> { name ->
+    private val reactive = proxy<RedissonReactiveClient> { name, _ ->
         when (name) {
             "getScript" -> script
             else -> error("Unexpected reactive operation $name")
         }
     }
-    private val client = proxy<RedissonClient> { name ->
+    private val client = proxy<RedissonClient> { name, _ ->
         when (name) {
             "reactive" -> reactive
             "shutdown" -> null
@@ -117,13 +120,13 @@ internal class SyncMapEventFixture : AutoCloseable {
             "overrideFromRemote", AbstractSyncStructure.SimpleVersionedSnapshot::class.java
         ).apply { isAccessible = true }
 
-        private inline fun <reified T> proxy(crossinline call: (String) -> Any?): T =
+        private inline fun <reified T> proxy(crossinline call: (String, Array<out Any?>?) -> Any?): T =
             Proxy.newProxyInstance(T::class.java.classLoader, arrayOf(T::class.java)) { self, method, args ->
                 when (method.name) {
                     "toString" -> "MapEventTest${T::class.java.simpleName}"
                     "hashCode" -> System.identityHashCode(self)
                     "equals" -> self === args?.get(0)
-                    else -> call(method.name)
+                    else -> call(method.name, args)
                 }
             } as T
     }
