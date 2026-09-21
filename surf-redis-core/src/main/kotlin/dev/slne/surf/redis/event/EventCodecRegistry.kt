@@ -262,47 +262,60 @@ internal data class EventCodecRegistration(
     @Volatile
     private var measuredPacketSizeEstimate: Int = 0
 
+    private var decayGrace: Int = 0
+
     val packetSizeEstimate: Int
         get() = measuredPacketSizeEstimate.takeIf { it > 0 }
             ?: CustomEventPacketCodec.DEFAULT_INITIAL_CAPACITY
 
 
     /**
-     * Adjusts the estimated packet size based on the provided actual packet size.
+     * Updates the packet-size estimate used as the initial capacity for future outbound packet buffers.
      *
-     * The method uses an exponentially weighted moving average (EWMA) algorithm to update the
-     * `measuredPacketSizeEstimate` field, which is used to optimize the transport of serialized events.
-     * The adjustment is capped to stay within a predefined minimum and maximum packet size range.
+     * [actualSize] is clamped to the valid packet-size range before being recorded. An observation that
+     * is greater than or equal to the current estimate replaces it immediately and resets the decay
+     * grace period.
      *
-     * @param actualSize The actual size of the packet to be recorded, expressed as an integer.
+     * Smaller observations leave the estimate unchanged for [PACKET_SIZE_DECAY_GRACE] updates. Once
+     * that grace period has elapsed, each smaller observation reduces the estimate by
+     * `estimate / 2^[PACKET_SIZE_DECAY_SHIFT]`, but never below the observed size.
+     *
+     * The estimate is only an allocation hint and does not affect the encoded packet contents.
+     *
+     * @param actualSize the encoded packet size in bytes
      */
     fun recordPacketSize(actualSize: Int) {
+        val observed = actualSize.coerceIn(1, CustomEventPacketCodec.MAX_PACKET_SIZE)
         val previous = measuredPacketSizeEstimate
-        if (previous == 0) {
-            measuredPacketSizeEstimate =
-                actualSize.coerceIn(1, CustomEventPacketCodec.MAX_PACKET_SIZE)
+
+        if (observed >= previous) {
+            measuredPacketSizeEstimate = observed
+            decayGrace = PACKET_SIZE_DECAY_GRACE
             return
         }
-        val delta = actualSize - previous
-        val adjustment = when {
-            delta > 0 -> maxOf(1, delta / PACKET_SIZE_EWMA_WEIGHT)
-            delta < 0 -> minOf(-1, delta / PACKET_SIZE_EWMA_WEIGHT)
-            else -> 0
+
+        val grace = decayGrace
+        if (grace > 0) {
+            decayGrace = grace - 1
+            return
         }
-        measuredPacketSizeEstimate = (previous + adjustment)
-            .coerceIn(1, CustomEventPacketCodec.MAX_PACKET_SIZE)
+
+        measuredPacketSizeEstimate = maxOf(observed, previous - (previous shr PACKET_SIZE_DECAY_SHIFT))
     }
 
     private companion object {
         /**
-         * Weight factor used in the calculation of the exponentially weighted moving average (EWMA)
-         * for packet size estimation. This constant determines the influence of the most recent
-         * packet size measurement on the overall estimated packet size.
-         *
-         * A higher value of this weight prioritizes recent measurements more heavily, making
-         * the estimate more sensitive to recent changes. Conversely, a lower value results in
-         * a smoother estimate that is less impacted by recent fluctuations.
+         * Number of smaller packet observations ignored after the estimate is established or increased
+         * before decay is allowed to begin.
          */
-        const val PACKET_SIZE_EWMA_WEIGHT = 4
+        const val PACKET_SIZE_DECAY_GRACE = 1
+
+        /**
+         * Controls how aggressively the packet-size estimate decays after the grace period.
+         *
+         * On each decay step, `estimate / 2^[PACKET_SIZE_DECAY_SHIFT]` is subtracted from the current
+         * estimate. A value of `1` therefore reduces the estimate by approximately half.
+         */
+        const val PACKET_SIZE_DECAY_SHIFT = 1
     }
 }

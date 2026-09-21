@@ -226,7 +226,7 @@ class CustomEventPacketCodecTest {
     }
 
     @Test
-    fun `moving packet size estimate adapts without sharing redisson buffers`() {
+    fun `packet size estimate adapts without sharing redisson buffers`() {
         val registry = registry(PacketCodec())
         val registration = registry.codecForEventId(PacketCodec.EVENT_ID)!!
 
@@ -237,7 +237,7 @@ class CustomEventPacketCodecTest {
         val second = encode(PacketEvent(42, ByteArray(4_096)), registration)
         val secondSize = second.readableBytes()
         assertNotSame(first, second)
-        assertEquals(firstSize + (secondSize - firstSize) / 4, registration.packetSizeEstimate)
+        assertEquals(secondSize, registration.packetSizeEstimate)
 
         first.release()
         val result = try {

@@ -95,7 +95,7 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
 
     override fun unregisterListener(id: Int): Mono<*> = remoteMap.removeListener(id)
 
-    override fun snapshot() = lock.read { Object2ObjectOpenHashMap(map) }
+    override fun snapshot() = lock.read { map.clone() }
     override fun size() = lock.read { map.size }
     override fun containsKey(key: K) = lock.read { map.containsKey(key) }
     override fun get(key: K): V? = lock.read { map[key] }
@@ -122,23 +122,21 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
     }
 
     override fun removeIf(predicate: (K, V) -> Boolean): Boolean {
-        val keysToRemove = ObjectArrayList<K>()
-        val removedLocal = ObjectArrayList<Pair<K, V>>()
+        val removed = ObjectArrayList<SyncMapChange.Removed<K, V>>()
         mutate {
             val it = map.object2ObjectEntrySet().fastIterator()
             while (it.hasNext()) {
                 val e = it.next()
                 if (predicate(e.key, e.value)) {
-                    keysToRemove.add(e.key)
-                    removedLocal.add(e.key to e.value)
+                    removed.add(SyncMapChange.Removed(e.key, e.value))
                     it.remove()
                 }
             }
         }
-        if (keysToRemove.isEmpty) return false
+        if (removed.isEmpty) return false
 
-        removeManyRemote(keysToRemove)
-        removedLocal.forEach { (k, v) -> notifyListeners(SyncMapChange.Removed(k, v)) }
+        removeManyRemote(removed)
+        for (change in removed) notifyListeners(change)
 
         return true
     }
@@ -227,8 +225,7 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
     override suspend fun removeIfAndAwait(
         predicate: (K, V) -> Boolean,
     ): Boolean {
-        val keysToRemove = ObjectArrayList<K>()
-        val removedLocal = ObjectArrayList<Pair<K, V>>()
+        val removed = ObjectArrayList<SyncMapChange.Removed<K, V>>()
 
         mutate {
             val iterator = map.object2ObjectEntrySet().fastIterator()
@@ -237,23 +234,22 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
                 val entry = iterator.next()
 
                 if (predicate(entry.key, entry.value)) {
-                    keysToRemove.add(entry.key)
-                    removedLocal.add(entry.key to entry.value)
+                    removed.add(SyncMapChange.Removed(entry.key, entry.value))
                     iterator.remove()
                 }
             }
         }
 
-        if (keysToRemove.isEmpty) {
+        if (removed.isEmpty) {
             return false
         }
 
-        for ((key, value) in removedLocal) {
-            notifyListeners(SyncMapChange.Removed(key, value))
+        for (change in removed) {
+            notifyListeners(change)
         }
 
-        val encodedKeys = Array(keysToRemove.size) { index ->
-            encodeKey(keysToRemove[index])
+        val encodedKeys = Array(removed.size) { index ->
+            encodeKey(removed[index].key)
         }
 
         writeBatchToRemoteAwait(
@@ -418,8 +414,8 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
         return decoded
     }
 
-    private fun removeManyRemote(keys: List<K>) {
-        val encKeys = Array(keys.size) { i -> encodeKey(keys[i]) }
+    private fun removeManyRemote(removed: List<SyncMapChange.Removed<K, V>>) {
+        val encKeys = Array(removed.size) { i -> encodeKey(removed[i].key) }
         writeBatchToRemote(REMOVE_MANY_SCRIPT, EVENT_REMOVE, *encKeys)
     }
 

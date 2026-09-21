@@ -82,7 +82,7 @@ class SyncSetImpl<T : Any> internal constructor(
 
     override fun unregisterListener(id: Int): Mono<*> = remoteSet.removeListener(id)
 
-    override fun snapshot() = lock.read { ObjectOpenHashSet(set) }
+    override fun snapshot() = lock.read { set.clone() }
     override fun size() = lock.read { set.size }
     override fun contains(element: T) = lock.read { set.contains(element) }
 
