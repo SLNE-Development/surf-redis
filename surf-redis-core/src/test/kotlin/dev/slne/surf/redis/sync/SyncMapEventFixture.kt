@@ -10,6 +10,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
 import kotlinx.serialization.json.Json
 import org.redisson.api.RScriptReactive
+import org.redisson.api.RTopicReactive
 import org.redisson.api.RedissonClient
 import org.redisson.api.RedissonReactiveClient
 import org.redisson.codec.BaseEventCodec
@@ -27,6 +28,9 @@ internal class SyncMapEventFixture : AutoCloseable {
     var beforeEncode: (Value) -> Unit = {}
     var afterEncode: () -> Unit = {}
     var scriptResult: List<Any> = listOf("key", "snapshot", "10")
+    var scriptResponse: () -> Mono<out Any> = { Mono.just(scriptResult) }
+    var scriptLoads = 0
+    var wakeups = 0
     var onScriptArguments: (Array<*>) -> Unit = {}
     val resyncs = AtomicInteger()
     val changes = mutableListOf<SyncMapChange<String, Value>>()
@@ -38,18 +42,25 @@ internal class SyncMapEventFixture : AutoCloseable {
 
     private val script = proxy<RScriptReactive> { name, args ->
         when (name) {
-            "scriptLoad" -> Mono.just("snapshot-sha")
+            "scriptLoad" -> { scriptLoads++; Mono.just("snapshot-sha") }
             "evalSha" -> {
                 resyncs.incrementAndGet()
                 onScriptArguments(args!!.last() as Array<*>)
-                Mono.just(scriptResult)
+                scriptResponse()
             }
             else -> error("Unexpected script operation $name")
+        }
+    }
+    private val topic = proxy<RTopicReactive> { name, _ ->
+        when (name) {
+            "publish" -> { wakeups++; Mono.just(0L) }
+            else -> error("Unexpected topic operation $name")
         }
     }
     private val reactive = proxy<RedissonReactiveClient> { name, _ ->
         when (name) {
             "getScript" -> script
+            "getTopic" -> topic
             else -> error("Unexpected reactive operation $name")
         }
     }

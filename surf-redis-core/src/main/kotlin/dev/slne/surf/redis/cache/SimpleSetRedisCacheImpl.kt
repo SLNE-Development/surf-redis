@@ -339,10 +339,10 @@ class SimpleSetRedisCacheImpl<T : Any>(
             }
 
             @Suppress("UNCHECKED_CAST")
-            scriptExecutor.execute<Long>(
+            scriptExecutor.executeWithValues<Long>(
                 TOUCH_SCRIPT, RScript.Mode.READ_WRITE, RScript.ReturnType.LONG,
                 keys = touchScriptKeys,
-                *(argv as Array<Any>)
+                values = argv as Array<Any>
             ).subscribe(
                 { /* no payload needed */ },
                 { e ->
@@ -546,12 +546,12 @@ class SimpleSetRedisCacheImpl<T : Any>(
         }
 
         @Suppress("UNCHECKED_CAST")
-        val result = scriptExecutor.execute<List<Any>>(
+        val result = scriptExecutor.executeWithValues<List<Any>>(
             UPSERT_SCRIPT,
             RScript.Mode.READ_WRITE,
             RScript.ReturnType.LIST,
             scriptKeys,
-            *(argv as Array<Any>),
+            values = argv as Array<Any>,
         ).awaitSingle()
 
         val (wasNew, touchedIndices) = parseLuaFlagAndTouched(result)
@@ -672,12 +672,12 @@ class SimpleSetRedisCacheImpl<T : Any>(
         }
 
         @Suppress("UNCHECKED_CAST")
-        val result = scriptExecutor.execute<List<Any>>(
+        val result = scriptExecutor.executeWithValues<List<Any>>(
             REMOVE_ID_SCRIPT,
             RScript.Mode.READ_WRITE,
             RScript.ReturnType.LIST,
             scriptKeys,
-            *(argv as Array<Any>)
+            values = argv as Array<Any>
         ).awaitSingle()
 
         val (removed, touched) = parseLuaFlagAndTouched(result)
@@ -721,12 +721,12 @@ class SimpleSetRedisCacheImpl<T : Any>(
         }
 
         @Suppress("UNCHECKED_CAST")
-        val removedCount = scriptExecutor.execute<Long>(
+        val removedCount = scriptExecutor.executeWithValues<Long>(
             REMOVE_INDEX_SCRIPT,
             RScript.Mode.READ_WRITE,
             RScript.ReturnType.LONG,
             scriptKeys,
-            *(argv as Array<Any>)
+            values = argv as Array<Any>
         ).awaitSingle()
 
         if (removedCount <= 0L) return false
@@ -751,12 +751,12 @@ class SimpleSetRedisCacheImpl<T : Any>(
         }
 
         @Suppress("UNCHECKED_CAST")
-        val deletedCount = scriptExecutor.execute<Long>(
+        val deletedCount = scriptExecutor.executeWithValues<Long>(
             CLEAR_SCRIPT,
             RScript.Mode.READ_WRITE,
             RScript.ReturnType.LONG,
             scriptKeys,
-            *(argv as Array<Any>)
+            values = argv as Array<Any>
         ).awaitSingle()
 
         clearNearCacheOnly()

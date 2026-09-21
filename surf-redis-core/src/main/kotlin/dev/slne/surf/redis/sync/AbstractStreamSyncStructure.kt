@@ -16,6 +16,7 @@ import reactor.core.publisher.Mono
 import reactor.util.retry.Retry
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import java.util.function.Consumer
 import kotlin.time.Duration
 import kotlin.time.toJavaDuration
 
@@ -70,6 +71,7 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
     private val msgDelimiterStr: String = MESSAGE_DELIMITER.toString()
     private val streamMaxLengthStr: String = MAX_STREAM_LENGTH.toString()
     private val scriptKeys: List<Any> = listOf(dataKey, streamKey, versionKey)
+    private val writeVersionConsumer = Consumer<Long>(::handleWriteVersion)
 
     private val wakeupBus = SyncStreamWakeupBus.getInstance(api)
     private val wakeupSink = wakeupBus.register(streamKey)
@@ -236,7 +238,7 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
         eventType: String,
         vararg values: String
     ) {
-        executeWrite(script, eventType, *values)
+        executeWrite(script, eventType, values)
             .subscribe({}, {})
     }
 
@@ -245,16 +247,16 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
         eventType: String,
         vararg values: String,
     ): Mono<Long> {
-        return executeWrite(script, eventType, *values)
+        return executeWrite(script, eventType, values)
     }
 
     private fun executeWrite(
         script: String,
         eventType: String,
-        vararg values: String,
+        values: Array<out String>,
     ): Mono<Long> {
-        return executeScript<Long>(script, RScript.ReturnType.LONG, eventType, *values)
-            .doOnNext(::handleWriteVersion)
+        return executeScript<Long>(script, RScript.ReturnType.LONG, eventType, values)
+            .doOnNext(writeVersionConsumer)
             .resyncOnScriptError(script)
     }
 
@@ -262,20 +264,25 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
         script: String,
         returnType: RScript.ReturnType,
         eventType: String,
-        vararg values: String,
+        values: Array<out String>,
     ): Mono<T> {
-        return scriptExecutor.execute(
+        val argv = Array<Any>(6 + values.size) { index ->
+            when (index) {
+                0 -> instanceId
+                1 -> msgDelimiterStr
+                2 -> streamMaxLengthStr
+                3 -> STREAM_FIELD_TYPE
+                4 -> STREAM_FIELD_MSG
+                5 -> eventType
+                else -> values[index - 6]
+            }
+        }
+        return scriptExecutor.executeWithValues(
             script,
             RScript.Mode.READ_WRITE,
             returnType,
             scriptKeys,
-            instanceId,
-            msgDelimiterStr,
-            streamMaxLengthStr,
-            STREAM_FIELD_TYPE,
-            STREAM_FIELD_MSG,
-            eventType,
-            *values,
+            argv,
         )
     }
 
@@ -308,7 +315,7 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
         eventType: String,
         vararg values: String,
     ): RemoteWriteResult {
-        val raw = executeScript<List<Any>>(script, RScript.ReturnType.LIST, eventType, *values)
+        val raw = executeScript<List<Any>>(script, RScript.ReturnType.LIST, eventType, values)
             .resyncOnScriptError(script)
             .awaitSingle()
 
@@ -340,7 +347,7 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
         vararg values: String,
         payload: String = values.joinToString(msgDelimiterStr),
     ): Boolean {
-        val version = executeWrite(script, eventType, *values).awaitSingle()
+        val version = executeWrite(script, eventType, values).awaitSingle()
         if (version <= 0L) return false
 
         applyOwnEvent(eventType, StreamEventData(version, instanceId, payload))
@@ -376,7 +383,7 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
         eventType: String,
         vararg values: String,
     ) {
-        executeBatchWrite(script, eventType, *values)
+        executeBatchWrite(script, eventType, values)
             .subscribe({}, {})
     }
 
@@ -385,15 +392,15 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
         eventType: String,
         vararg values: String,
     ): Mono<VersionRange> {
-        return executeBatchWrite(script, eventType, *values)
+        return executeBatchWrite(script, eventType, values)
     }
 
     private fun executeBatchWrite(
         script: String,
         eventType: String,
-        vararg values: String,
+        values: Array<out String>,
     ): Mono<VersionRange> {
-        return executeScript<List<Any>>(script, RScript.ReturnType.LIST, eventType, *values)
+        return executeScript<List<Any>>(script, RScript.ReturnType.LIST, eventType, values)
             .map { raw ->
                 VersionRange(
                     first = raw.getOrNull(0).asLongOrZero(),
