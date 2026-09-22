@@ -12,6 +12,7 @@ import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer
 import java.time.Instant
 import java.util.*
+import kotlin.enums.EnumEntries
 import kotlin.enums.enumEntries
 
 private val MAX_CONTAINER_ELEMENTS = java.lang.Long.getLong("surf.redis.max-container-elements", 1_000_000)
@@ -345,24 +346,46 @@ inline fun <reified E : Enum<E>> ByteBuf.readEnum(): E {
 }
 
 inline fun <reified E : Enum<E>> ByteBuf.writeEnumSet(set: Set<E>) {
-    val values = enumEntries<E>()
-    val bitSet = BitSet(values.size)
+    writeEnumSet(enumEntries(), set)
+}
 
-    for (i in values.indices) {
-        bitSet.set(i, values[i] in set)
+@PublishedApi
+internal fun <E : Enum<E>> ByteBuf.writeEnumSet(enumEntries: EnumEntries<E>, set: Set<E>) {
+    val byteSize = (enumEntries.size + Byte.SIZE_BITS - 1) / Byte.SIZE_BITS
+    ensureWritable(byteSize)
+    val start = writerIndex()
+
+    for (byteIndex in 0 until byteSize) {
+        val base = byteIndex * Byte.SIZE_BITS
+        var bits = 0
+        for (bit in 0 until minOf(Byte.SIZE_BITS, enumEntries.size - base)) {
+            if (enumEntries[base + bit] in set) bits = bits or (1 shl bit)
+        }
+        setByte(start + byteIndex, bits)
     }
 
-    writeFixedBitSet(bitSet, values.size)
+    writerIndex(start + byteSize)
 }
 
 inline fun <reified E : Enum<E>> ByteBuf.readEnumSet(): EnumSet<E> {
-    val values = enumEntries<E>()
-    val bitSet = readFixedBitSet(values.size)
-    val result = EnumSet.noneOf(E::class.java)
+    return readEnumSet(enumEntries(), E::class.java)
+}
 
-    for (i in values.indices) {
-        if (bitSet.get(i)) {
-            result.add(values[i])
+@PublishedApi
+internal fun <E : Enum<E>> ByteBuf.readEnumSet(
+    enumEntries: EnumEntries<E>,
+    enumClass: Class<E>,
+): EnumSet<E> {
+    val byteSize = (enumEntries.size + Byte.SIZE_BITS - 1) / Byte.SIZE_BITS
+    val start = readerIndex()
+    skipBytes(byteSize)
+    val result = EnumSet.noneOf(enumClass)
+
+    for (byteIndex in 0 until byteSize) {
+        val base = byteIndex * Byte.SIZE_BITS
+        val bits = getByte(start + byteIndex).toInt()
+        for (bit in 0 until minOf(Byte.SIZE_BITS, enumEntries.size - base)) {
+            if (bits and (1 shl bit) != 0) result.add(enumEntries[base + bit])
         }
     }
 
