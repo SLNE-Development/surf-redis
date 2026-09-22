@@ -54,7 +54,7 @@ internal object CustomEventPacketCodec {
         try {
             buffer.writeInt(MAGIC)
             buffer.writeByte(PROTOCOL_VERSION)
-            buffer.writeString(registration.eventId, EventCodecRegistry.MAX_EVENT_ID_BYTES)
+            registration.writeEventId(buffer)
             buffer.writeVarInt(registration.version)
             buffer.writeLong(event.timestamp)
             buffer.writeNullable(event.originId) { target, origin ->

@@ -3,6 +3,10 @@ package dev.slne.surf.redis.event
 import dev.slne.surf.api.core.util.emptyObject2ObjectMap
 import dev.slne.surf.api.core.util.freeze
 import dev.slne.surf.redis.codec.RedisCodec
+import dev.slne.surf.redis.codec.writeString
+import io.netty.buffer.ByteBuf
+import io.netty.buffer.ByteBufUtil
+import io.netty.buffer.Unpooled
 import it.unimi.dsi.fastutil.objects.Object2ObjectMap
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap
 import it.unimi.dsi.fastutil.objects.ObjectArrayList
@@ -259,6 +263,8 @@ internal data class EventCodecRegistration(
     val version: Int,
     val explicit: Boolean
 ) {
+    private val encodedEventId: ByteArray = encodeEventId(eventId)
+
     @Volatile
     private var measuredPacketSizeEstimate: Int = 0
 
@@ -268,6 +274,9 @@ internal data class EventCodecRegistration(
         get() = measuredPacketSizeEstimate.takeIf { it > 0 }
             ?: CustomEventPacketCodec.DEFAULT_INITIAL_CAPACITY
 
+    fun writeEventId(buffer: ByteBuf) {
+        buffer.writeBytes(encodedEventId)
+    }
 
     /**
      * Updates the packet-size estimate used as the initial capacity for future outbound packet buffers.
@@ -317,5 +326,15 @@ internal data class EventCodecRegistration(
          * estimate. A value of `1` therefore reduces the estimate by approximately half.
          */
         const val PACKET_SIZE_DECAY_SHIFT = 1
+
+        fun encodeEventId(eventId: String): ByteArray {
+            val buffer = Unpooled.buffer()
+            try {
+                buffer.writeString(eventId, EventCodecRegistry.MAX_EVENT_ID_BYTES)
+                return ByteBufUtil.getBytes(buffer)
+            } finally {
+                buffer.release()
+            }
+        }
     }
 }

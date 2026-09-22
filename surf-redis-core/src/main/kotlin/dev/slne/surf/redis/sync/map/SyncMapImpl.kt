@@ -8,13 +8,13 @@ import dev.slne.surf.redis.sync.AbstractSyncStructure.SimpleVersionedSnapshot
 import dev.slne.surf.redis.sync.SyncValueCodec
 import dev.slne.surf.redis.util.LuaScriptRegistry
 import dev.slne.surf.redis.util.RedisExpirableUtils
+import dev.slne.surf.redis.util.Utf8StringCodec
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap
 import it.unimi.dsi.fastutil.objects.ObjectArrayList
 import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
 import org.redisson.api.DeletedObjectListener
 import org.redisson.api.ExpiredObjectListener
-import org.redisson.client.codec.StringCodec
 import reactor.core.publisher.Mono
 import kotlin.concurrent.read
 import kotlin.concurrent.write
@@ -76,7 +76,7 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
     private val remoteMap by lazy {
         api.redissonReactive.getMap<String, String>(
             dataKey,
-            StringCodec.INSTANCE
+            Utf8StringCodec
         )
     }
 

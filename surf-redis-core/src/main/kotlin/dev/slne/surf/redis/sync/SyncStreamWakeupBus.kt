@@ -3,7 +3,7 @@ package dev.slne.surf.redis.sync
 import com.github.benmanes.caffeine.cache.Caffeine
 import dev.slne.surf.api.core.util.logger
 import dev.slne.surf.redis.RedisApi
-import org.redisson.client.codec.StringCodec
+import dev.slne.surf.redis.util.Utf8StringCodec
 import reactor.core.publisher.Mono
 import reactor.core.publisher.Sinks
 import java.util.concurrent.ConcurrentHashMap
@@ -28,7 +28,7 @@ internal class SyncStreamWakeupBus private constructor(
     }
 
     private val topic by lazy {
-        api.redissonReactive.getTopic(CHANNEL, StringCodec.INSTANCE)
+        api.redissonReactive.getTopic(CHANNEL, Utf8StringCodec)
     }
 
     private val subscribers = ConcurrentHashMap<String, CopyOnWriteArrayList<Sinks.Many<Unit>>>()

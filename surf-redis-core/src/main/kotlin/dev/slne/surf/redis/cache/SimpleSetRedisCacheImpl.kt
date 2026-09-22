@@ -18,7 +18,6 @@ import org.redisson.api.RAtomicLongReactive
 import org.redisson.api.RScript
 import org.redisson.api.RStreamReactive
 import org.redisson.api.stream.StreamMessageId
-import org.redisson.client.codec.StringCodec
 import reactor.core.Disposable
 import reactor.core.publisher.Flux
 import reactor.core.publisher.Mono
@@ -109,7 +108,7 @@ class SimpleSetRedisCacheImpl<T : Any>(
 
     private val scriptExecutor = LuaScriptExecutor.getInstance(api, LuaScripts)
     private val stream: RStreamReactive<String, String> by lazy {
-        api.redissonReactive.getStream(streamKey, StringCodec.INSTANCE)
+        api.redissonReactive.getStream(streamKey, Utf8StringCodec)
     }
     private val versionCounter: RAtomicLongReactive by lazy {
         api.redissonReactive.getAtomicLong(versionKey)
@@ -354,7 +353,7 @@ class SimpleSetRedisCacheImpl<T : Any>(
 
     private fun refreshIdsTtl() {
         refreshTtl(refreshKeyIds()) {
-            api.redissonReactive.getSet<String>(idsRedisKey, StringCodec.INSTANCE)
+            api.redissonReactive.getSet<String>(idsRedisKey, Utf8StringCodec)
                 .expire(ttl.toJavaDuration())
                 .doOnError { e ->
                     log.atWarning().withCause(e).log("Failed to refresh TTL for $idsRedisKey")
@@ -366,7 +365,7 @@ class SimpleSetRedisCacheImpl<T : Any>(
     private fun refreshIndexTtl(indexName: String, indexValue: String) {
         val key = indexRedisKey(indexName, indexValue)
         refreshTtl(refreshKeyIdx(indexName, indexValue)) {
-            api.redissonReactive.getSet<String>(key, StringCodec.INSTANCE)
+            api.redissonReactive.getSet<String>(key, Utf8StringCodec)
                 .expire(ttl.toJavaDuration())
                 .doOnError { e ->
                     log.atWarning().withCause(e).log("Failed to refresh TTL for $key")
@@ -403,7 +402,7 @@ class SimpleSetRedisCacheImpl<T : Any>(
         }
 
         val bucket =
-            api.redissonReactive.getBucket<String>(valueRedisKey(normId), StringCodec.INSTANCE)
+            api.redissonReactive.getBucket<String>(valueRedisKey(normId), Utf8StringCodec)
         val raw = bucket.get().awaitSingleOrNull() ?: run {
             nearValues.put(normId, CacheEntry.Null)
             return null
@@ -446,7 +445,7 @@ class SimpleSetRedisCacheImpl<T : Any>(
             CacheEntry.Null -> emptySet()
             else -> {
                 val redisKey = indexRedisKey(index.name, queryValue)
-                val set = api.redissonReactive.getSet<String>(redisKey, StringCodec.INSTANCE)
+                val set = api.redissonReactive.getSet<String>(redisKey, Utf8StringCodec)
                 val ids = set.readAll().awaitSingleOrNull().orEmpty()
                 set.expire(ttl.toJavaDuration()).awaitSingleOrNull()
 
@@ -462,7 +461,7 @@ class SimpleSetRedisCacheImpl<T : Any>(
 
         // Verify each ID's object (self-heal stale entries)
         val redisIndexKey = indexRedisKey(index.name, queryValue)
-        val indexSet = api.redissonReactive.getSet<String>(redisIndexKey, StringCodec.INSTANCE)
+        val indexSet = api.redissonReactive.getSet<String>(redisIndexKey, Utf8StringCodec)
         val result = ConcurrentHashMap.newKeySet<T>(loadedIds.size)
         val filteredIds = ConcurrentHashMap.newKeySet<String>(loadedIds.size)
         val changed = AtomicBoolean(false)
@@ -569,7 +568,7 @@ class SimpleSetRedisCacheImpl<T : Any>(
         val ids = getAllIdsCached()
         if (ids.isEmpty()) return emptySet()
 
-        val idsRedis = api.redissonReactive.getSet<String>(idsRedisKey, StringCodec.INSTANCE)
+        val idsRedis = api.redissonReactive.getSet<String>(idsRedisKey, Utf8StringCodec)
         val result = ConcurrentHashMap.newKeySet<T>()
         val semaphore = Semaphore(MAX_CONCURRENT_REDIS_OPS)
 
@@ -776,7 +775,7 @@ class SimpleSetRedisCacheImpl<T : Any>(
             }
 
             null -> {
-                val set = api.redissonReactive.getSet<String>(idsRedisKey, StringCodec.INSTANCE)
+                val set = api.redissonReactive.getSet<String>(idsRedisKey, Utf8StringCodec)
                 val ids = set.readAll().awaitSingleOrNull().orEmpty()
                 set.expire(ttl.toJavaDuration()).awaitSingleOrNull()
                 nearIds.put(

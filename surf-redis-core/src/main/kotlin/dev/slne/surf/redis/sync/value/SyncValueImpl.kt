@@ -8,11 +8,11 @@ import dev.slne.surf.redis.sync.AbstractSyncStructure.SimpleVersionedSnapshot
 import dev.slne.surf.redis.sync.SyncValueCodec
 import dev.slne.surf.redis.util.LuaScriptRegistry
 import dev.slne.surf.redis.util.RedisExpirableUtils
+import dev.slne.surf.redis.util.Utf8StringCodec
 import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
 import org.redisson.api.DeletedObjectListener
 import org.redisson.api.ExpiredObjectListener
-import org.redisson.client.codec.StringCodec
 import reactor.core.publisher.Mono
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration
@@ -56,7 +56,7 @@ class SyncValueImpl<T : Any> internal constructor(
     private val bucket by lazy {
         api.redissonReactive.getBucket<String>(
             dataKey,
-            StringCodec.INSTANCE
+            Utf8StringCodec
         )
     }
     private val value = AtomicReference(defaultValue)

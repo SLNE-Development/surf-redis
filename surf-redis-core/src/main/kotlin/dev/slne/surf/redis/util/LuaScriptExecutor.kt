@@ -5,7 +5,6 @@ import com.github.benmanes.caffeine.cache.LoadingCache
 import dev.slne.surf.redis.RedisApi
 import org.redisson.api.RScript
 import org.redisson.client.RedisNoScriptException
-import org.redisson.client.codec.StringCodec
 import reactor.core.publisher.Mono
 import reactor.util.retry.Retry
 import java.util.concurrent.ConcurrentHashMap
@@ -13,7 +12,7 @@ import java.util.concurrent.ConcurrentHashMap
 class LuaScriptExecutor private constructor(private val api: RedisApi, private val registry: LuaScriptRegistry) {
 
     private val scriptShas = ConcurrentHashMap<String, Mono<String>>()
-    private val script by lazy { api.redissonReactive.getScript(StringCodec.INSTANCE) }
+    private val script by lazy { api.redissonReactive.getScript(Utf8StringCodec) }
 
     private fun getSha(id: String): Mono<String> = scriptShas[id] ?: scriptShas.computeIfAbsent(id) {
         script.scriptLoad(registry.get(id)).cache()

@@ -3,7 +3,9 @@ package dev.slne.surf.redis.event
 import dev.slne.surf.redis.codec.RedisCodecException
 import dev.slne.surf.redis.codec.readString
 import dev.slne.surf.redis.codec.writeString
+import dev.slne.surf.redis.codec.writeVarInt
 import io.netty.buffer.ByteBuf
+import io.netty.buffer.ByteBufUtil
 import io.netty.buffer.Unpooled
 import java.nio.ReadOnlyBufferException
 import kotlin.test.*
@@ -250,6 +252,40 @@ class CustomEventPacketCodecTest {
         assertEquals(4_096, event.payload.size)
     }
 
+    @Test
+    fun `packet header encodes the event id exactly like writeString`() {
+        val eventIds = listOf(
+            PacketCodec.EVENT_ID,
+            "dev.slne.surf.cloud.api.common.event.player.PlayerConnectedEvent",
+            "ereignis:grüße-§a",
+            "event:🌊-welle",
+            "malformed:\uD800é",
+            "x".repeat(EventCodecRegistry.MAX_EVENT_ID_BYTES),
+        )
+        for (eventId in eventIds) {
+            val codec = PacketCodec(version = 300, eventId = eventId)
+            val registration = registry(codec).codecForEventId(eventId)!!
+            val event = PacketEvent(0x01020304, byteArrayOf(9, 8, 7))
+            val expected = Unpooled.buffer().apply {
+                writeInt(0x53524531)
+                writeByte(1)
+                writeString(eventId, EventCodecRegistry.MAX_EVENT_ID_BYTES)
+                writeVarInt(codec.version)
+                writeLong(event.timestamp)
+                writeBoolean(false)
+                writeInt(event.value)
+                writeBytes(event.payload)
+            }
+            val actual = encode(event, registration)
+            try {
+                assertContentEquals(ByteBufUtil.getBytes(expected), ByteBufUtil.getBytes(actual), "event id '$eventId'")
+            } finally {
+                expected.release()
+                actual.release()
+            }
+        }
+    }
+
     private fun encode(event: PacketEvent, registration: EventCodecRegistration): ByteBuf =
         CustomEventPacketCodec.redisCodec.valueEncoder.encode(CustomEventPacketCodec.outbound(event, registration))
 
@@ -281,9 +317,9 @@ class CustomEventPacketCodecTest {
     ) : RedisEvent()
 
     private class PacketCodec(
-        override val version: Int = 1
+        override val version: Int = 1,
+        override val eventId: String = EVENT_ID
     ) : RedisEventCodec<PacketEvent> {
-        override val eventId = EVENT_ID
         override val codecId = "test-packet-codec"
 
         override fun encode(buffer: ByteBuf, value: PacketEvent) {

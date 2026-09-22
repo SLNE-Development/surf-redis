@@ -14,6 +14,7 @@ import dev.slne.surf.redis.RedisComponentProvider
 import dev.slne.surf.redis.invoker.RedisInvokerLookupProvider
 import dev.slne.surf.redis.invoker.RedisRequestHandlerInvokerTemplate
 import dev.slne.surf.redis.util.KotlinSerializerCache
+import dev.slne.surf.redis.util.Utf8StringCodec
 import dev.slne.surf.redis.util.asDeferred
 import it.unimi.dsi.fastutil.objects.Object2ObjectMap
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap
@@ -29,7 +30,6 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.write
 import kotlin.time.Duration.Companion.milliseconds
-import org.redisson.client.codec.StringCodec.INSTANCE as StringCodec
 
 @OptIn(InternalInvokerApi::class)
 @Suppress("UnstableApiUsage")
@@ -63,11 +63,11 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
 
     private val serializerCache = KotlinSerializerCache<Any>(api.json.serializersModule)
 
-    private val requestTopic by lazy { api.redissonReactive.getTopic(REQUEST_CHANNEL, StringCodec) }
+    private val requestTopic by lazy { api.redissonReactive.getTopic(REQUEST_CHANNEL, Utf8StringCodec) }
     private val responseTopic by lazy {
         api.redissonReactive.getTopic(
             RESPONSE_CHANNEL,
-            StringCodec
+            Utf8StringCodec
         )
     }
 

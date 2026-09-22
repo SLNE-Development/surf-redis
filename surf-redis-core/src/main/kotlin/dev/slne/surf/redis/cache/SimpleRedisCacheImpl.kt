@@ -22,7 +22,6 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.toJavaDuration
-import org.redisson.client.codec.StringCodec.INSTANCE as StringCodec
 
 class SimpleRedisCacheImpl<K : Any, V : Any>(
     n: String,
@@ -86,7 +85,7 @@ class SimpleRedisCacheImpl<K : Any, V : Any>(
 
     private val scriptExecutor = LuaScriptExecutor.getInstance(api, LuaScripts)
     private val stream: RStreamReactive<String, String> by lazy {
-        api.redissonReactive.getStream<String, String>(streamKey, StringCodec)
+        api.redissonReactive.getStream(streamKey, Utf8StringCodec)
     }
     private val versionCounter: RAtomicLongReactive by lazy {
         api.redissonReactive.getAtomicLong(versionKey)
@@ -249,7 +248,7 @@ class SimpleRedisCacheImpl<K : Any, V : Any>(
             null -> Unit // miss
         }
 
-        val bucket = api.redissonReactive.getBucket<String>(redisKeyOf(localKey), StringCodec)
+        val bucket = api.redissonReactive.getBucket<String>(redisKeyOf(localKey), Utf8StringCodec)
         val raw = bucket.get().awaitSingleOrNull() ?: return null
 
         if (!refreshTtl(localKey)) {
@@ -312,7 +311,7 @@ class SimpleRedisCacheImpl<K : Any, V : Any>(
         }
 
 
-        val bucket = api.redissonReactive.getBucket<String>(redisKeyOf(localKey), StringCodec)
+        val bucket = api.redissonReactive.getBucket<String>(redisKeyOf(localKey), Utf8StringCodec)
         val raw = bucket.get().awaitSingleOrNull()
 
         if (raw != null) {

@@ -14,6 +14,7 @@ import dev.slne.surf.redis.codec.RedisCodecException
 import dev.slne.surf.redis.invoker.RedisEventInvokerTemplate
 import dev.slne.surf.redis.invoker.RedisInvokerLookupProvider
 import dev.slne.surf.redis.util.KotlinSerializerCache
+import dev.slne.surf.redis.util.Utf8StringCodec
 import dev.slne.surf.redis.util.asDeferred
 import it.unimi.dsi.fastutil.objects.Object2ObjectMap
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap
@@ -25,7 +26,6 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.JsonElement
-import org.redisson.client.codec.StringCodec
 import reactor.core.publisher.Mono
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.locks.ReentrantReadWriteLock
@@ -78,7 +78,7 @@ class RedisEventBusImpl(private val api: RedisApi) : RedisEventBus, RedisEventCo
     private val codecRegistry = EventCodecRegistry()
     private val missingCodecDiagnostics = ConcurrentHashMap.newKeySet<String>()
 
-    private val topic by lazy { api.redissonReactive.getTopic(REDIS_CHANNEL, StringCodec.INSTANCE) }
+    private val topic by lazy { api.redissonReactive.getTopic(REDIS_CHANNEL, Utf8StringCodec) }
     private val customTopic by lazy {
         api.redissonReactive.getTopic(CustomEventPacketCodec.CHANNEL, CustomEventPacketCodec.redisCodec)
     }
