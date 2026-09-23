@@ -124,8 +124,6 @@ class IoThreadOffloadTest {
         }
 
         override fun onStreamEvent(type: String, data: StreamEventData) = Unit
-        override fun registerListeners0(): List<Mono<Int>> = emptyList()
-        override fun unregisterListener(id: Int): Mono<*> = Mono.empty<Void>()
         override fun loadFromRemote0(): Mono<SimpleVersionedSnapshot<Unit>> =
             Mono.just(SimpleVersionedSnapshot(Unit, 1)).publishOn(io)
     }

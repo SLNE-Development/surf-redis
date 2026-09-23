@@ -75,12 +75,16 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
     private val wakeupBus = SyncStreamWakeupBus.getInstance(api)
     private val wakeupSink = wakeupBus.register(streamKey)
 
+    private val keyEventBus = SyncKeyEventBus.getInstance(api)
+    private val resyncOnKeyEvent = Runnable(::requestResync)
+
     @MustBeInvokedByOverriders
     override fun init(): Mono<Void> {
-        return wakeupBus.init()
+        return Mono.`when`(wakeupBus.init(), keyEventBus.init())
             .then(validateCodecConfiguration())
             .then(stream.fetchLatestStreamId())
             .doOnNext { cursorId.set(it) }
+            .then(Mono.fromRunnable<Void> { keyEventBus.register(dataKey, resyncOnKeyEvent) })
             .then(super.init())
             .doOnSuccess {
                 trackDisposable(startPolling())
@@ -511,6 +515,7 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
 
     override fun dispose0() {
         wakeupBus.unregister(streamKey, wakeupSink)
+        keyEventBus.unregister(dataKey, resyncOnKeyEvent)
         super.dispose0()
     }
 

@@ -31,8 +31,6 @@ internal class RemoteWriteProbe(api: RedisApi) :
     }
 
     override fun onStreamEvent(type: String, data: StreamEventData) { appliedPayload = data.payload(0) }
-    override fun registerListeners0(): List<Mono<Int>> = emptyList()
-    override fun unregisterListener(id: Int): Mono<*> = Mono.empty<Void>()
     override fun loadFromRemote0(): Mono<SimpleVersionedSnapshot<Unit>> {
         snapshots++
         return Mono.just(SimpleVersionedSnapshot(Unit, 100))

@@ -13,8 +13,6 @@ import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap
 import it.unimi.dsi.fastutil.objects.ObjectArrayList
 import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
-import org.redisson.api.DeletedObjectListener
-import org.redisson.api.ExpiredObjectListener
 import reactor.core.publisher.Mono
 import kotlin.concurrent.read
 import kotlin.concurrent.write
@@ -87,13 +85,6 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
             }
             .then()
     }
-
-    override fun registerListeners0(): List<Mono<Int>> = listOf(
-        remoteMap.addListener(DeletedObjectListener { requestResync() }),
-        remoteMap.addListener(ExpiredObjectListener { requestResync() })
-    )
-
-    override fun unregisterListener(id: Int): Mono<*> = remoteMap.removeListener(id)
 
     override fun snapshot() = lock.read { map.clone() }
     override fun size() = lock.read { map.size }

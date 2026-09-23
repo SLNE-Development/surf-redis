@@ -35,8 +35,6 @@ internal class StreamParsingProbe(api: RedisApi) :
         if (readParts) parts = listOf(data.payload(0), data.payloadOrNull(1), data.payloadOrNull(2))
     }
 
-    override fun registerListeners0(): List<Mono<Int>> = emptyList()
-    override fun unregisterListener(id: Int): Mono<*> = Mono.empty<Void>()
     override fun loadFromRemote0(): Mono<SimpleVersionedSnapshot<Unit>> = Mono.just(SimpleVersionedSnapshot(Unit, 100))
 
     companion object {

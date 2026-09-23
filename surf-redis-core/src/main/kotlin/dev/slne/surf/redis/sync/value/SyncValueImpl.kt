@@ -11,8 +11,6 @@ import dev.slne.surf.redis.util.RedisExpirableUtils
 import dev.slne.surf.redis.util.Utf8StringCodec
 import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
-import org.redisson.api.DeletedObjectListener
-import org.redisson.api.ExpiredObjectListener
 import reactor.core.publisher.Mono
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration
@@ -69,13 +67,6 @@ class SyncValueImpl<T : Any> internal constructor(
             }
             .then()
     }
-
-    override fun registerListeners0(): List<Mono<Int>> = listOf(
-        bucket.addListener(ExpiredObjectListener { requestResync() }),
-        bucket.addListener(DeletedObjectListener { requestResync() })
-    )
-
-    override fun unregisterListener(id: Int): Mono<*> = bucket.removeListener(id)
 
     override fun get(): T = value.get()
 

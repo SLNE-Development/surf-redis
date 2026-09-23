@@ -12,8 +12,6 @@ import dev.slne.surf.redis.util.Utf8StringCodec
 import it.unimi.dsi.fastutil.objects.ObjectArrayList
 import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
-import org.redisson.api.DeletedObjectListener
-import org.redisson.api.ExpiredObjectListener
 import reactor.core.publisher.Mono
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.read
@@ -90,13 +88,6 @@ class SyncListImpl<T : Any> internal constructor(
             }
             .then()
     }
-
-    override fun registerListeners0(): List<Mono<Int>> = listOf(
-        remoteList.addListener(DeletedObjectListener { requestResync() }),
-        remoteList.addListener(ExpiredObjectListener { requestResync() })
-    )
-
-    override fun unregisterListener(id: Int): Mono<*> = remoteList.removeListener(id)
 
     override fun snapshot() = lock.read { ObjectArrayList(list) }
     override fun size(): Int = lock.read { list.size }

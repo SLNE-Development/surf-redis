@@ -11,8 +11,6 @@ import dev.slne.surf.redis.util.RedisExpirableUtils
 import dev.slne.surf.redis.util.Utf8StringCodec
 import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet
 import kotlinx.coroutines.reactor.awaitSingle
-import org.redisson.api.DeletedObjectListener
-import org.redisson.api.ExpiredObjectListener
 import reactor.core.publisher.Mono
 import kotlin.concurrent.read
 import kotlin.concurrent.write
@@ -74,13 +72,6 @@ class SyncSetImpl<T : Any> internal constructor(
             }
             .then()
     }
-
-    override fun registerListeners0(): List<Mono<Int>> = listOf(
-        remoteSet.addListener(DeletedObjectListener { requestResync() }),
-        remoteSet.addListener(ExpiredObjectListener { requestResync() })
-    )
-
-    override fun unregisterListener(id: Int): Mono<*> = remoteSet.removeListener(id)
 
     override fun snapshot() = lock.read { set.clone() }
     override fun size() = lock.read { set.size }
