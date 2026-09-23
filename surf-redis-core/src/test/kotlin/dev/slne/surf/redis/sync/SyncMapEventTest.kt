@@ -55,6 +55,7 @@ class SyncMapEventTest {
                     assertSame(original, fixture.map["key"])
                 }
                 fixture.event(type, if (type == "P") "key\u0000next\u0000old" else "key\u0000old")
+                fixture.awaitResync()
                 assertEquals(1, fixture.resyncs.get())
                 assertEquals("snapshot", fixture.map["key"]!!.text)
                 assertTrue(fixture.changes.isEmpty())
@@ -86,6 +87,7 @@ class SyncMapEventTest {
             SyncMapEventFixture().use { fixture ->
                 fixture.seed("local")
                 fixture.event(type, if (type == "P") "key\u0000next\u0000remote" else "key\u0000remote")
+                fixture.awaitResync()
                 assertEquals(1, fixture.resyncs.get())
                 assertEquals("snapshot", fixture.map["key"]!!.text)
                 assertTrue(fixture.changes.isEmpty())

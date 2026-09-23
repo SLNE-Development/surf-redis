@@ -52,6 +52,7 @@ fun <K : Any, V : Any> RStreamReactive<K, V>.pollContinuously(
                             .count(count)
 
                         read(args)
+                            .publishOn(scheduler)
                             .doOnNext { batch ->
                                 if (batch.isNotEmpty()) {
                                     handler(Result.success(batch))

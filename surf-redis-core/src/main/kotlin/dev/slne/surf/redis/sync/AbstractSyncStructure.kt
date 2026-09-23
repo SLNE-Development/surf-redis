@@ -2,6 +2,7 @@ package dev.slne.surf.redis.sync
 
 import dev.slne.surf.api.core.util.logger
 import dev.slne.surf.redis.RedisApi
+import dev.slne.surf.redis.RedisInstance
 import dev.slne.surf.redis.util.DisposableAware
 import org.jetbrains.annotations.MustBeInvokedByOverriders
 import reactor.core.publisher.Flux
@@ -94,8 +95,12 @@ abstract class AbstractSyncStructure<L, R : AbstractSyncStructure.VersionedSnaps
 
     /**
      * Reads the current remote snapshot without applying it locally.
+     *
+     * The snapshot is emitted on [RedisInstance.streamPollScheduler], never on the Redis I/O thread
+     * that completed the reply.
      */
     protected fun loadRemoteSnapshot(): Mono<R> = loadFromRemote0()
+        .publishOn(RedisInstance.get().streamPollScheduler)
         .switchIfEmpty(
             Mono.error(
                 IllegalStateException("Remote snapshot for synchronized structure '$id' returned no result")

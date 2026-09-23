@@ -18,6 +18,7 @@ import org.redisson.config.Config
 import org.redisson.misc.RedisURI
 import reactor.core.publisher.Mono
 import java.lang.reflect.Proxy
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.time.Duration.Companion.minutes
 
@@ -108,6 +109,16 @@ internal class SyncMapEventFixture : AutoCloseable {
         eventMethod.invoke(map, type, eventConstructor.newInstance(2L, "remote", payload))
     }
 
+    /** Waits until a resync requested by [event] has installed its snapshot on the stream poll scheduler. */
+    fun awaitResync() {
+        val inFlight = resyncInFlightField.get(map) as AtomicBoolean
+        val deadline = System.nanoTime() + 5_000_000_000L
+        while (inFlight.get()) {
+            check(System.nanoTime() < deadline) { "resync did not finish" }
+            Thread.sleep(1)
+        }
+    }
+
     override fun close() {
         map.dispose()
         for (name in listOf("redisListenerScope", "syncStructureScope")) {
@@ -130,6 +141,9 @@ internal class SyncMapEventFixture : AutoCloseable {
         private val snapshotMethod = SyncMapImpl::class.java.getDeclaredMethod(
             "overrideFromRemote", AbstractSyncStructure.SimpleVersionedSnapshot::class.java
         ).apply { isAccessible = true }
+
+        private val resyncInFlightField = AbstractStreamSyncStructure::class.java.getDeclaredField("resyncInFlight")
+            .apply { isAccessible = true }
 
         private inline fun <reified T> proxy(crossinline call: (String, Array<out Any?>?) -> Any?): T =
             Proxy.newProxyInstance(T::class.java.classLoader, arrayOf(T::class.java)) { self, method, args ->
