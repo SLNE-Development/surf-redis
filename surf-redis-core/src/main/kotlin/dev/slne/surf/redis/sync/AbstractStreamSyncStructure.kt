@@ -11,6 +11,7 @@ import org.redisson.api.RScript
 import org.redisson.api.RStreamReactive
 import org.redisson.api.stream.StreamMessageId
 import reactor.core.Disposable
+import reactor.core.Disposables
 import reactor.core.publisher.Mono
 import reactor.util.retry.Retry
 import java.util.concurrent.atomic.AtomicBoolean
@@ -47,6 +48,8 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
 
     private val cursorId = AtomicReference(StreamMessageId(0, 0))
     private val resyncInFlight = AtomicBoolean(false)
+
+    private val resyncSubscription = Disposables.swap().also(::trackDisposable)
 
     protected val namespace: String = "$structureNamespace${this.id}:"
     protected val dataKey = "${namespace}snapshot"
@@ -493,7 +496,7 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
     protected fun requestResync() {
         if (!resyncInFlight.compareAndSet(false, true)) return
 
-        val disposable = loadFromRemote()
+        loadFromRemote()
             .retryWhen(
                 Retry.backoff(
                     Long.MAX_VALUE,
@@ -508,9 +511,8 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
                     wakeupSink.tryEmitNext(Unit)
                 }
             }
+            .doOnSubscribe { subscription -> resyncSubscription.update(Disposable(subscription::cancel)) }
             .subscribe()
-
-        trackDisposable(disposable)
     }
 
     override fun dispose0() {
