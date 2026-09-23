@@ -5,7 +5,8 @@ package dev.slne.surf.redis.request
 import com.google.common.flogger.StackSize
 import dev.slne.surf.api.core.invoker.HiddenInvokerUtil
 import dev.slne.surf.api.core.invoker.InvokerFactory
-import dev.slne.surf.api.core.serializer.java.uuid.SerializableUUID
+import dev.slne.surf.api.core.serializer.java.uuid.JavaUUIDStringSerializer
+import dev.slne.surf.api.core.serializer.java.uuid.SerializableStringUUID
 import dev.slne.surf.api.core.util.emptyObject2ObjectMap
 import dev.slne.surf.api.core.util.logger
 import dev.slne.surf.api.shared.api.util.InternalInvokerApi
@@ -13,6 +14,7 @@ import dev.slne.surf.redis.RedisApi
 import dev.slne.surf.redis.RedisComponentProvider
 import dev.slne.surf.redis.invoker.RedisInvokerLookupProvider
 import dev.slne.surf.redis.invoker.RedisRequestHandlerInvokerTemplate
+import dev.slne.surf.redis.util.JsonEnvelopeHead
 import dev.slne.surf.redis.util.KotlinSerializerCache
 import dev.slne.surf.redis.util.Utf8StringCodec
 import dev.slne.surf.redis.util.asDeferred
@@ -81,6 +83,8 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
         private val log = logger()
         private const val REQUEST_CHANNEL = "surf-redis:requests"
         private const val RESPONSE_CHANNEL = "surf-redis:responses"
+        private val REQUEST_ID_PREFIX = JsonEnvelopeHead.prefix("request_id")
+        private const val REQUEST_CLASS_SEPARATOR = "\",\"request_class\":\""
 
         private val INVOKER_FACTORY = InvokerFactory(
             /* templateClass = */ RedisRequestHandlerInvokerTemplate::class.java,
@@ -110,6 +114,12 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
      * a response back to Redis.
      */
     private fun handleIncomingRequest(message: String) {
+        val head = JsonEnvelopeHead.secondString(message, REQUEST_ID_PREFIX, REQUEST_CLASS_SEPARATOR)
+        if (head != null && !handlerSnapshot.containsKey(head)) {
+            log.atFine().log("No registered request class for name: %s - ignoring request.", head)
+            return
+        }
+
         val envelope = try {
             api.json.decodeFromString<RequestEnvelope>(message)
         } catch (e: SerializationException) {
@@ -156,6 +166,12 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
      * Responses without a matching pending request are ignored.
      */
     private fun handleIncomingResponse(message: String) {
+        val headId = JsonEnvelopeHead.leadingUuid(message, REQUEST_ID_PREFIX)
+        if (headId != null && !pendingRequests.containsKey(headId)) {
+            log.atFine().log("No pending request found for response with ID: %s - ignoring response.", headId)
+            return
+        }
+
         val envelope = try {
             api.json.decodeFromString<ResponseEnvelope>(message)
         } catch (e: SerializationException) {
@@ -479,7 +495,7 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
      */
     @Serializable
     private data class RequestEnvelope(
-        val requestId: SerializableUUID,
+        @Serializable(with = JavaUUIDStringSerializer::class) val requestId: UUID,
         val requestClass: String,
         val requestData: JsonElement
     ) {
@@ -503,7 +519,7 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
      */
     @Serializable
     private data class ResponseEnvelope(
-        val requestId: SerializableUUID,
+        val requestId: SerializableStringUUID,
         val responseClass: String,
         val responseData: JsonElement
     ) {

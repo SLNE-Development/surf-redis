@@ -13,6 +13,7 @@ import dev.slne.surf.redis.RedisComponentProvider
 import dev.slne.surf.redis.codec.RedisCodecException
 import dev.slne.surf.redis.invoker.RedisEventInvokerTemplate
 import dev.slne.surf.redis.invoker.RedisInvokerLookupProvider
+import dev.slne.surf.redis.util.JsonEnvelopeHead
 import dev.slne.surf.redis.util.KotlinSerializerCache
 import dev.slne.surf.redis.util.Utf8StringCodec
 import dev.slne.surf.redis.util.asDeferred
@@ -92,6 +93,7 @@ class RedisEventBusImpl(private val api: RedisApi) : RedisEventBus, RedisEventCo
     companion object {
         private val log = logger()
         private const val REDIS_CHANNEL = "surf-redis:events"
+        private val EVENT_HEAD_PREFIX = JsonEnvelopeHead.prefix("event_class")
 
         private val EMPTY_INVOKERS = emptyArray<RedisEventInvoker>()
 
@@ -146,6 +148,12 @@ class RedisEventBusImpl(private val api: RedisApi) : RedisEventBus, RedisEventCo
      * registered handlers for the corresponding event type.
      */
     private fun handleIncomingMessage(message: String) {
+        val head = JsonEnvelopeHead.leadingString(message, EVENT_HEAD_PREFIX)
+        if (head != null && !typeSnapshot.containsKey(head)) {
+            log.atFine().log("No registered event class for name: %s - ignoring event.", head)
+            return
+        }
+
         val envelope = try {
             api.json.decodeFromString<EventEnvelope>(message)
         } catch (e: SerializationException) {
