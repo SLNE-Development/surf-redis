@@ -64,6 +64,7 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
     private val registrationLock = ReentrantReadWriteLock()
 
     private val serializerCache = KotlinSerializerCache<Any>(api.json.serializersModule)
+    private val envelopeSerializers = OutboundEnvelopeSerializers(serializerCache)
 
     private val requestTopic by lazy { api.redissonReactive.getTopic(REQUEST_CHANNEL, Utf8StringCodec) }
     private val responseTopic by lazy {
@@ -83,8 +84,8 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
         private val log = logger()
         private const val REQUEST_CHANNEL = "surf-redis:requests"
         private const val RESPONSE_CHANNEL = "surf-redis:responses"
-        private val REQUEST_ID_PREFIX = JsonEnvelopeHead.prefix("request_id")
-        private const val REQUEST_CLASS_SEPARATOR = "\",\"request_class\":\""
+        internal val REQUEST_ID_PREFIX = JsonEnvelopeHead.prefix("request_id")
+        internal const val REQUEST_CLASS_SEPARATOR = "\",\"request_class\":\""
 
         private val INVOKER_FACTORY = InvokerFactory(
             /* templateClass = */ RedisRequestHandlerInvokerTemplate::class.java,
@@ -210,7 +211,7 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
     ): T {
         RedisComponentProvider.injectOriginId(request)
         val requestId = UUID.randomUUID()
-        val requestData = serializeRequest(request) ?: throw IllegalStateException()
+        val message = serializeRequest(requestId, request) ?: throw IllegalStateException()
         val deferred = CompletableDeferred<RedisResponse>()
 
         pendingRequests[requestId] = deferred
@@ -218,9 +219,6 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
         if (responseTypeRegistry[responseTypeName] !== responseType) {
             responseTypeRegistry[responseTypeName] = responseType
         }
-
-        val envelope = RequestEnvelope.forRequest(request, requestId, requestData)
-        val message = api.json.encodeToString(envelope)
 
         try {
             requestTopic.publish(message).awaitSingle()
@@ -242,10 +240,7 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
      *         or `0` if the response could not be serialized
      */
     private fun sendResponse(requestId: UUID, response: RedisResponse): Deferred<Long> {
-        val responseData = serializeResponse(response) ?: return CompletableDeferred(0L)
-        val envelope = ResponseEnvelope.forResponse(response, requestId, responseData)
-        val message = api.json.encodeToString(envelope)
-
+        val message = serializeResponse(requestId, response) ?: return CompletableDeferred(0L)
         return responseTopic.publish(message).asDeferred()
     }
 
@@ -332,12 +327,12 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
     }
 
     /**
-     * Serializes a request to JSON.
+     * Serializes a request into its JSON envelope.
      *
-     * @return the serialized request, or `null` if no serializer is available or serialization fails
+     * @return the envelope message, or `null` if no serializer is available or serialization fails
      */
-    private fun serializeRequest(request: RedisRequest): JsonElement? {
-        val serializer = serializerCache.get(request.javaClass)
+    private fun serializeRequest(requestId: UUID, request: RedisRequest): String? {
+        val serializer = envelopeSerializers.request(request.javaClass)
 
         if (serializer == null) {
             log.atWarning()
@@ -346,7 +341,7 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
         }
 
         try {
-            return api.json.encodeToJsonElement(serializer, request)
+            return api.json.encodeToString(serializer, OutboundEnvelope(requestId, request))
         } catch (e: SerializationException) {
             log.atWarning()
                 .withCause(e)
@@ -390,12 +385,12 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
     }
 
     /**
-     * Serializes a response to JSON.
+     * Serializes a response into its JSON envelope.
      *
-     * @return the serialized response, or `null` if no serializer is available or serialization fails
+     * @return the envelope message, or `null` if no serializer is available or serialization fails
      */
-    private fun serializeResponse(response: RedisResponse): JsonElement? {
-        val serializer = serializerCache.get(response.javaClass)
+    private fun serializeResponse(requestId: UUID, response: RedisResponse): String? {
+        val serializer = envelopeSerializers.response(response.javaClass)
 
         if (serializer == null) {
             log.atWarning()
@@ -404,7 +399,7 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
         }
 
         try {
-            return api.json.encodeToJsonElement(serializer, response)
+            return api.json.encodeToString(serializer, OutboundEnvelope(requestId, response))
         } catch (e: SerializationException) {
             log.atWarning()
                 .withCause(e)
@@ -492,49 +487,27 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
 
     /**
      * Wire format for request messages published to Redis.
+     *
+     * Inbound requests are decoded with this class. Outbound requests are encoded by
+     * [OutboundEnvelopeSerializers], which takes field names and order from this descriptor.
      */
     @Serializable
-    private data class RequestEnvelope(
+    internal data class RequestEnvelope(
         @Serializable(with = JavaUUIDStringSerializer::class) val requestId: UUID,
         val requestClass: String,
         val requestData: JsonElement
-    ) {
-        companion object {
-            fun forRequest(
-                request: RedisRequest,
-                requestId: UUID,
-                data: JsonElement
-            ): RequestEnvelope {
-                return RequestEnvelope(
-                    requestId = requestId,
-                    requestClass = request.javaClass.name,
-                    requestData = data
-                )
-            }
-        }
-    }
+    )
 
     /**
      * Wire format for response messages published to Redis.
+     *
+     * Inbound responses are decoded with this class. Outbound responses are encoded by
+     * [OutboundEnvelopeSerializers], which takes field names and order from this descriptor.
      */
     @Serializable
-    private data class ResponseEnvelope(
+    internal data class ResponseEnvelope(
         val requestId: SerializableStringUUID,
         val responseClass: String,
         val responseData: JsonElement
-    ) {
-        companion object {
-            fun forResponse(
-                response: RedisResponse,
-                requestId: UUID,
-                data: JsonElement
-            ): ResponseEnvelope {
-                return ResponseEnvelope(
-                    requestId = requestId,
-                    responseClass = response.javaClass.name,
-                    responseData = data
-                )
-            }
-        }
-    }
+    )
 }
