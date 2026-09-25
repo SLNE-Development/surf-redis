@@ -7,6 +7,7 @@ import dev.slne.surf.api.core.util.logger
 import dev.slne.surf.redis.RedisApi
 import dev.slne.surf.redis.cache.SimpleSetRedisCacheImpl.Companion.ID_FAN_OUT_CHUNK
 import dev.slne.surf.redis.util.*
+import it.unimi.dsi.fastutil.objects.ObjectArrayList
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.reactor.awaitSingle
@@ -22,7 +23,6 @@ import reactor.core.Disposable
 import reactor.core.publisher.Flux
 import reactor.core.publisher.Mono
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration
@@ -299,7 +299,7 @@ class SimpleSetRedisCacheImpl<T : Any>(
      * Runs [action] for every id, at most [ID_FAN_OUT_CHUNK] coroutines in flight at a time.
      */
     private suspend inline fun forEachIdChunked(
-        ids: Set<String>,
+        ids: Collection<String>,
         crossinline action: suspend (String) -> Unit
     ) {
         val iterator = ids.iterator()
@@ -412,6 +412,11 @@ class SimpleSetRedisCacheImpl<T : Any>(
             bucket.expire(ttl.toJavaDuration()).awaitSingleOrNull()
         }
 
+        return cacheValue(normId, raw)
+    }
+
+    /** Decodes [raw], the stored value of [normId], and near-caches the result. */
+    private fun cacheValue(normId: String, raw: String): T? {
         val obj = if (raw == NULL_MARKER) null else api.json.decodeFromString(serializer, raw)
 
         if (obj == null) {
@@ -422,6 +427,76 @@ class SimpleSetRedisCacheImpl<T : Any>(
         nearValues.put(normId, CacheEntry.Value(obj))
 
         return obj
+    }
+
+    private suspend fun forEachCachedValue(
+        ids: Set<String>,
+        permits: Semaphore,
+        onValue: (id: String, value: T?) -> Unit
+    ) {
+        val misses = ObjectArrayList<String>(minOf(ids.size, ID_FAN_OUT_CHUNK))
+
+        for (id in ids) {
+            val normId = id.trim()
+            if (normId.isEmpty()) {
+                onValue(id, null)
+                continue
+            }
+            requireNoNul(normId, "id")
+
+            when (val entry = nearValues.getIfPresent(normId)) {
+                is CacheEntry.Value -> {
+                    refreshValueTtl(normId)
+                    onValue(id, entry.value)
+                }
+
+                CacheEntry.Null -> {
+                    refreshValueTtl(normId)
+                    onValue(id, null)
+                }
+
+                null -> {
+                    misses.add(id)
+                    if (misses.size == ID_FAN_OUT_CHUNK) {
+                        loadMisses(misses, permits, onValue)
+                        misses.clear()
+                    }
+                }
+            }
+        }
+
+        if (misses.isNotEmpty()) loadMisses(misses, permits, onValue)
+    }
+
+    private suspend fun loadMisses(
+        ids: List<String>,
+        permits: Semaphore,
+        onValue: (id: String, value: T?) -> Unit,
+    ) {
+        val keys = Array(ids.size) { valueRedisKey(ids[it].trim()) }
+        val raws = api.redissonReactive.getBuckets(Utf8StringCodec).get<String>(*keys).awaitSingle()
+        val unrefreshedIds = ObjectArrayList<String>()
+
+        for (i in ids.indices) {
+            val normId = ids[i].trim()
+            val raw = raws[keys[i]]
+            if (raw == null) {
+                nearValues.put(normId, CacheEntry.Null)
+                onValue(ids[i], null)
+                continue
+            }
+
+            if (!refreshValueTtl(normId)) unrefreshedIds.add(normId)
+            onValue(ids[i], cacheValue(normId, raw))
+        }
+
+        forEachIdChunked(unrefreshedIds) { normId ->
+            permits.withPermit {
+                api.redissonReactive.getBucket<String>(valueRedisKey(normId), Utf8StringCodec)
+                    .expire(ttl.toJavaDuration())
+                    .awaitSingleOrNull()
+            }
+        }
     }
 
     override suspend fun <V : Any> findByIndexCached(index: RedisSetIndex<T, V>, value: V): Set<T> {
@@ -464,29 +539,23 @@ class SimpleSetRedisCacheImpl<T : Any>(
         val indexSet = api.redissonReactive.getSet<String>(redisIndexKey, Utf8StringCodec)
         val result = ConcurrentHashMap.newKeySet<T>(loadedIds.size)
         val filteredIds = ConcurrentHashMap.newKeySet<String>(loadedIds.size)
-        val changed = AtomicBoolean(false)
+        val staleIds = ObjectArrayList<String>()
         val semaphore = Semaphore(MAX_CONCURRENT_REDIS_OPS)
 
-        forEachIdChunked(loadedIds) { id ->
-            semaphore.withPermit {
-                val element = getCachedById(id)
-                if (element == null) {
-                    indexSet.remove(id).awaitSingleOrNull()
-                    changed.set(true)
-                } else {
-                    val matches = index.extractStringsSequence(element).any { it == queryValue }
-                    if (!matches) {
-                        indexSet.remove(id).awaitSingleOrNull()
-                        changed.set(true)
-                    } else {
-                        filteredIds.add(id)
-                        result.add(element)
-                    }
-                }
+        forEachCachedValue(loadedIds, semaphore) { id, element ->
+            if (element != null && index.extractStringsSequence(element).any { it == queryValue }) {
+                filteredIds.add(id)
+                result.add(element)
+            } else {
+                staleIds.add(id)
             }
         }
 
-        if (changed.get()) {
+        if (staleIds.isNotEmpty()) {
+            forEachIdChunked(staleIds) { id ->
+                semaphore.withPermit { indexSet.remove(id).awaitSingleOrNull() }
+            }
+
             nearIndexIds.put(
                 cacheKey,
                 if (filteredIds.isEmpty()) CacheEntry.Null else CacheEntry.Value(filteredIds)
@@ -570,18 +639,20 @@ class SimpleSetRedisCacheImpl<T : Any>(
 
         val idsRedis = api.redissonReactive.getSet<String>(idsRedisKey, Utf8StringCodec)
         val result = ConcurrentHashMap.newKeySet<T>()
+        val staleIds = ObjectArrayList<String>()
         val semaphore = Semaphore(MAX_CONCURRENT_REDIS_OPS)
 
-        forEachIdChunked(ids) { id ->
-            semaphore.withPermit {
-                val value = getCachedById(id)
-                if (value == null) {
-                    idsRedis.remove(id).awaitSingleOrNull() // stale
-                    nearIds.invalidate(LOCAL_IDS_CACHE_KEY)
-                } else if (condition(value)) {
-                    result.add(value)
-                }
+        forEachCachedValue(ids, semaphore) { id, value ->
+            if (value == null) {
+                staleIds.add(id)
+            } else if (condition(value)) {
+                result.add(value)
             }
+        }
+
+        forEachIdChunked(staleIds) { id ->
+            semaphore.withPermit { idsRedis.remove(id).awaitSingleOrNull() }
+            nearIds.invalidate(LOCAL_IDS_CACHE_KEY)
         }
 
         return result
@@ -634,20 +705,18 @@ class SimpleSetRedisCacheImpl<T : Any>(
         val ids = getAllIdsCached()
         if (ids.isEmpty()) return false
 
-        val removedAny = AtomicBoolean(false)
+        val matchedIds = ObjectArrayList<String>()
         val semaphore = Semaphore(MAX_CONCURRENT_REDIS_OPS)
 
-        forEachIdChunked(ids) { id ->
-            semaphore.withPermit {
-                val value = getCachedById(id)
-                if (value != null && predicate(value)) {
-                    removedAny.set(true)
-                    removeById(id)
-                }
-            }
+        forEachCachedValue(ids, semaphore) { id, value ->
+            if (value != null && predicate(value)) matchedIds.add(id)
         }
 
-        return removedAny.get()
+        forEachIdChunked(matchedIds) { id ->
+            semaphore.withPermit { removeById(id) }
+        }
+
+        return matchedIds.isNotEmpty()
     }
 
     override suspend fun removeById(id: String): Boolean {
