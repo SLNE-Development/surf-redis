@@ -56,6 +56,8 @@ internal class SetCacheFixture(nearValueCacheSize: Long = 10_000) : AutoCloseabl
                 val argv = args[4] as Array<Any>
                 when (args[1]) {
                     "touch_value" -> if (values.containsKey(valueKey(argv[2] as String))) 1L else 0L
+                    "get_and_touch" -> values[valueKey(argv[2] as String)]
+                    "read_all_and_touch" -> set((args[3] as List<*>).single() as String).toList()
                     "remove_by_id" -> removeById(argv[7] as String)
                     else -> error("Unexpected script ${args[1]}")
                 }
@@ -175,7 +177,9 @@ internal class SetCacheFixture(nearValueCacheSize: Long = 10_000) : AutoCloseabl
         fun valueKey(id: String) = "$PREFIX:__val__:$id"
         fun indexKey(color: String) = "$INDEX_PREFIX$color"
 
-        private val SCRIPTS = listOf("touch_value", "remove_by_id").associateWith { name ->
+        private val SCRIPTS = listOf(
+            "touch_value", "get_and_touch", "read_all_and_touch", "remove_by_id"
+        ).associateWith { name ->
             SetCacheFixture::class.java.getResource("/lua/cache/simple-indexed/$name.lua")!!.readText()
         }
 

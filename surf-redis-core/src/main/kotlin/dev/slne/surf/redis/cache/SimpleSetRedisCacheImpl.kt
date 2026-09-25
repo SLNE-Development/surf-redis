@@ -68,6 +68,8 @@ class SimpleSetRedisCacheImpl<T : Any>(
         private const val REMOVE_INDEX_SCRIPT = "remove_by_index"
         private const val CLEAR_SCRIPT = "clear"
         private const val TOUCH_SCRIPT = "touch_value"
+        private const val GET_AND_TOUCH_SCRIPT = "get_and_touch"
+        private const val READ_ALL_AND_TOUCH_SCRIPT = "read_all_and_touch"
 
         private object LuaScripts : LuaScriptRegistry("lua/cache/simple-indexed") {
             init {
@@ -76,6 +78,8 @@ class SimpleSetRedisCacheImpl<T : Any>(
                 load(REMOVE_INDEX_SCRIPT)
                 load(CLEAR_SCRIPT)
                 load(TOUCH_SCRIPT)
+                load(GET_AND_TOUCH_SCRIPT)
+                load(READ_ALL_AND_TOUCH_SCRIPT)
             }
         }
 
@@ -324,20 +328,10 @@ class SimpleSetRedisCacheImpl<T : Any>(
      */
     private fun refreshValueTtl(id: String): Boolean {
         return refreshTtl(refreshKeyVal(id)) {
-            val argv = arrayOfNulls<Any>(4 + indexNames.size)
-            argv[0] = ttlMillisStr
-            argv[1] = keyPrefix
-            argv[2] = id
-            argv[3] = indicesSizeStr
-            for (i in indexNames.indices) {
-                argv[4 + i] = indexNames[i]
-            }
-
-            @Suppress("UNCHECKED_CAST")
             scriptExecutor.executeWithValues<Long>(
                 TOUCH_SCRIPT, RScript.Mode.READ_WRITE, RScript.ReturnType.LONG,
                 keys = touchScriptKeys,
-                values = argv as Array<Any>
+                values = touchValueArgv(id)
             ).subscribe(
                 { /* no payload needed */ },
                 { e ->
@@ -345,6 +339,40 @@ class SimpleSetRedisCacheImpl<T : Any>(
                         .log("Failed to refresh TTL via TOUCH_VALUE for id=$id")
                 })
         }
+    }
+
+    private fun touchValueArgv(id: String): Array<Any> {
+        val argv = arrayOfNulls<Any>(4 + indexNames.size)
+        argv[0] = ttlMillisStr
+        argv[1] = keyPrefix
+        argv[2] = id
+        argv[3] = indicesSizeStr
+        for (i in indexNames.indices) {
+            argv[4 + i] = indexNames[i]
+        }
+
+        @Suppress("UNCHECKED_CAST")
+        return argv as Array<Any>
+    }
+
+    private suspend fun getAndTouchValue(id: String): String? {
+        val raw = scriptExecutor.executeWithValues<String>(
+            GET_AND_TOUCH_SCRIPT, RScript.Mode.READ_WRITE, RScript.ReturnType.VALUE,
+            keys = touchScriptKeys,
+            values = touchValueArgv(id)
+        ).awaitSingleOrNull() ?: return null
+
+        refreshGate.put(refreshKeyVal(id), Unit)
+        return raw
+    }
+
+    /** Reads all members of the Redis set [redisKey] and refreshes its TTL in the same script call. */
+    private suspend fun readAllAndTouch(redisKey: String): Set<String> {
+        return scriptExecutor.execute<List<String>>(
+            READ_ALL_AND_TOUCH_SCRIPT, RScript.Mode.READ_WRITE, RScript.ReturnType.LIST,
+            keys = listOf(redisKey),
+            /* argv */ ttlMillisStr
+        ).awaitSingleOrNull().orEmpty().toSet()
     }
 
     private fun refreshIdsTtl() {
@@ -397,15 +425,9 @@ class SimpleSetRedisCacheImpl<T : Any>(
             null -> Unit
         }
 
-        val bucket =
-            api.redissonReactive.getBucket<String>(valueRedisKey(normId), Utf8StringCodec)
-        val raw = bucket.get().awaitSingleOrNull() ?: run {
+        val raw = getAndTouchValue(normId) ?: run {
             nearValues.put(normId, CacheEntry.Null)
             return null
-        }
-
-        if (!refreshValueTtl(normId)) {
-            bucket.expire(ttl.toJavaDuration()).awaitSingleOrNull()
         }
 
         return cacheValue(normId, raw)
@@ -515,10 +537,7 @@ class SimpleSetRedisCacheImpl<T : Any>(
 
             CacheEntry.Null -> emptySet()
             else -> {
-                val redisKey = indexRedisKey(index.name, queryValue)
-                val set = api.redissonReactive.getSet<String>(redisKey, Utf8StringCodec)
-                val ids = set.readAll().awaitSingleOrNull().orEmpty()
-                set.expire(ttl.toJavaDuration()).awaitSingleOrNull()
+                val ids = readAllAndTouch(indexRedisKey(index.name, queryValue))
 
                 nearIndexIds.put(
                     cacheKey,
@@ -840,9 +859,7 @@ class SimpleSetRedisCacheImpl<T : Any>(
             }
 
             null -> {
-                val set = api.redissonReactive.getSet<String>(idsRedisKey, Utf8StringCodec)
-                val ids = set.readAll().awaitSingleOrNull().orEmpty()
-                set.expire(ttl.toJavaDuration()).awaitSingleOrNull()
+                val ids = readAllAndTouch(idsRedisKey)
                 nearIds.put(
                     LOCAL_IDS_CACHE_KEY,
                     if (ids.isEmpty()) CacheEntry.Null else CacheEntry.Value(ids)

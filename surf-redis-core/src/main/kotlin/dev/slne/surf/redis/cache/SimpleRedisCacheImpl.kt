@@ -20,7 +20,6 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
-import kotlin.time.toJavaDuration
 
 class SimpleRedisCacheImpl<K : Any, V : Any>(
     n: String,
@@ -50,6 +49,7 @@ class SimpleRedisCacheImpl<K : Any, V : Any>(
         private const val REMOVE_SCRIPT = "remove_by_id"
         private const val CLEAR_SCRIPT = "clear"
         private const val TOUCH_SCRIPT = "touch_value"
+        private const val GET_AND_TOUCH_SCRIPT = "get_and_touch"
 
         private object LuaScripts : LuaScriptRegistry("lua/cache/simple") {
             init {
@@ -58,6 +58,7 @@ class SimpleRedisCacheImpl<K : Any, V : Any>(
                 load(REMOVE_SCRIPT)
                 load(CLEAR_SCRIPT)
                 load(TOUCH_SCRIPT)
+                load(GET_AND_TOUCH_SCRIPT)
             }
         }
 
@@ -244,12 +245,7 @@ class SimpleRedisCacheImpl<K : Any, V : Any>(
             null -> Unit // miss
         }
 
-        val bucket = api.redissonReactive.getBucket<String>(redisKeyOf(localKey), Utf8StringCodec)
-        val raw = bucket.get().awaitSingleOrNull() ?: return null
-
-        if (!refreshTtl(localKey)) {
-            bucket.expire(ttl.toJavaDuration()).awaitSingleOrNull()
-        }
+        val raw = getAndTouch(localKey) ?: return null
 
         val entry = if (raw == NULL_MARKER) {
             CacheEntry.Null
@@ -307,13 +303,9 @@ class SimpleRedisCacheImpl<K : Any, V : Any>(
         }
 
 
-        val bucket = api.redissonReactive.getBucket<String>(redisKeyOf(localKey), Utf8StringCodec)
-        val raw = bucket.get().awaitSingleOrNull()
+        val raw = getAndTouch(localKey)
 
         if (raw != null) {
-            if (!refreshTtl(localKey)) {
-                bucket.expire(ttl.toJavaDuration()).awaitSingleOrNull()
-            }
             return if (raw == NULL_MARKER) {
                 nearCache.put(localKey, CacheEntry.Null)
                 null
@@ -429,6 +421,21 @@ class SimpleRedisCacheImpl<K : Any, V : Any>(
         )
 
         return true
+    }
+
+    private suspend fun getAndTouch(localKey: String): String? {
+        val raw = scriptExecutor.execute<String>(
+            GET_AND_TOUCH_SCRIPT,
+            RScript.Mode.READ_WRITE,
+            RScript.ReturnType.VALUE,
+            keys = touchScriptKeys,
+            /* argv */ ttlMillisStr,
+            localKey,
+            keyPrefix
+        ).awaitSingleOrNull() ?: return null
+
+        refreshGate.put(localKey, Unit)
+        return raw
     }
 
     private fun clearNearCacheOnly() {
