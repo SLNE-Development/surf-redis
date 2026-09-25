@@ -64,7 +64,7 @@ class RemoteWritePipelineTest {
     }
 
     @Test
-    fun `write results preserve wakeups local events and negative-version resync`() = withProbe { fixture, probe ->
+    fun `write results preserve local events and negative-version resync without client wakeups`() = withProbe { fixture, probe ->
         probe.bootstrap()
         fixture.scriptResponse = { Mono.just(1L) }
         assertTrue(probe.apply(arrayOf("first")))
@@ -74,12 +74,12 @@ class RemoteWritePipelineTest {
         assertEquals("second", probe.appliedPayload)
         fixture.scriptResponse = { Mono.just(listOf(3L, 4L)) }
         assertEquals(3L to 4L, probe.batch(arrayOf("third", "fourth")).block())
-        assertEquals(3, fixture.wakeups)
         assertEquals(0, probe.snapshots)
         fixture.scriptResponse = { Mono.just(-1L) }
         assertEquals(-1L, probe.write(emptyArray()).block())
         assertEquals(1, probe.snapshots)
-        assertEquals(3, fixture.wakeups)
+        // The mutation scripts publish the wakeup themselves
+        assertEquals(0, fixture.wakeups)
     }
 
     @Test

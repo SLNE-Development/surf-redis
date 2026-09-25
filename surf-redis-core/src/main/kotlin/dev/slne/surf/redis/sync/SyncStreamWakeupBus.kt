@@ -1,7 +1,6 @@
 package dev.slne.surf.redis.sync
 
 import com.github.benmanes.caffeine.cache.Caffeine
-import dev.slne.surf.api.core.util.logger
 import dev.slne.surf.redis.RedisApi
 import dev.slne.surf.redis.util.Utf8StringCodec
 import reactor.core.publisher.Mono
@@ -13,9 +12,10 @@ internal class SyncStreamWakeupBus private constructor(
     private val api: RedisApi,
 ) {
     companion object {
-        private val log = logger()
-
-        private const val CHANNEL = "surf-redis:sync:wakeup"
+        /**
+         * Channel the sync mutation scripts publish `streamKey\u0000originId` to after each XADD
+         */
+        internal const val CHANNEL = "surf-redis:sync:wakeup"
         private const val MESSAGE_DELIMITER = '\u0000'
 
         private val byApi = Caffeine.newBuilder()
@@ -67,26 +67,6 @@ internal class SyncStreamWakeupBus private constructor(
         if (streamSubscribers.isEmpty()) {
             subscribers.remove(streamKey, streamSubscribers)
         }
-    }
-
-    fun publish(streamKey: String) {
-        val message = buildString(
-            streamKey.length + api.clientId.length + 1
-        ) {
-            append(streamKey)
-            append(MESSAGE_DELIMITER)
-            append(api.clientId)
-        }
-
-        topic.publish(message)
-            .subscribe(
-                {},
-                { throwable ->
-                    log.atFine()
-                        .withCause(throwable)
-                        .log("Failed to publish sync stream wakeup for '$streamKey'")
-                },
-            )
     }
 
     private fun handleWakeup(message: String) {

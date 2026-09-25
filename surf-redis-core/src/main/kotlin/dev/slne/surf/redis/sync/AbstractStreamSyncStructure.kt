@@ -301,10 +301,7 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
         when {
             newVersion < 0L -> requestResync()
             newVersion == 0L -> Unit
-            else -> {
-                applyVersion(newVersion)
-                wakeupBus.publish(streamKey)
-            }
+            else -> applyVersion(newVersion)
         }
     }
 
@@ -412,10 +409,6 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
             .doOnNext { range ->
                 if (range.first != 0L || range.last != 0L) {
                     applyVersionRange(range.first, range.last)
-
-                    if (range.last > 0L) {
-                        wakeupBus.publish(streamKey)
-                    }
                 }
             }
             .resyncOnScriptError(script)
