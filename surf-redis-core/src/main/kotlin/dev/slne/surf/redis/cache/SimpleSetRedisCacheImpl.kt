@@ -6,6 +6,7 @@ import com.sksamuel.aedile.core.expireAfterWrite
 import dev.slne.surf.api.core.util.logger
 import dev.slne.surf.redis.RedisApi
 import dev.slne.surf.redis.cache.SimpleSetRedisCacheImpl.Companion.ID_FAN_OUT_CHUNK
+import dev.slne.surf.redis.sync.SyncStreamWakeupBus
 import dev.slne.surf.redis.util.*
 import it.unimi.dsi.fastutil.objects.ObjectArrayList
 import kotlinx.coroutines.coroutineScope
@@ -19,7 +20,6 @@ import org.redisson.api.RScript
 import org.redisson.api.RStreamReactive
 import org.redisson.api.stream.StreamMessageId
 import reactor.core.Disposable
-import reactor.core.publisher.Flux
 import reactor.core.publisher.Mono
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
@@ -114,6 +114,9 @@ class SimpleSetRedisCacheImpl<T : Any>(
         api.redissonReactive.getStream(streamKey, Utf8StringCodec)
     }
 
+    private val wakeupBus = SyncStreamWakeupBus.getInstance(api)
+    private val wakeupSink = wakeupBus.register(streamKey)
+
     private val nearValues = buildNearCache<T>(nearValueCacheSize)
     private val nearIds = buildNearCache<Set<String>>(1)
     private val nearIndexIds = buildNearCache<Set<String>>(nearIndexCacheSize)
@@ -166,7 +169,8 @@ class SimpleSetRedisCacheImpl<T : Any>(
     override fun init(): Mono<Void> {
         if (isDisposed) return Mono.error(IllegalStateException("Cache '$namespace' is disposed"))
 
-        return stream.fetchLatestStreamId()
+        return wakeupBus.init()
+            .then(stream.fetchLatestStreamId())
             .doOnNext { id -> cursorId.set(id) }
             .doOnSuccess {
                 trackDisposable(startPolling())
@@ -176,13 +180,13 @@ class SimpleSetRedisCacheImpl<T : Any>(
     }
 
     override fun dispose0() {
+        wakeupBus.unregister(streamKey, wakeupSink)
         clearNearCacheOnly()
     }
 
     private fun startPolling() = stream.pollContinuously(
         cursorId = cursorId,
-        wakeups = Flux.never(),
-        pollInterval = 250.milliseconds,
+        wakeups = wakeupSink.asFlux(),
     ) {
         onSuccess { batch ->
             for ((messageId, fields) in batch) {

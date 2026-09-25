@@ -13,7 +13,7 @@ internal class SyncStreamWakeupBus private constructor(
 ) {
     companion object {
         /**
-         * Channel the sync mutation scripts publish `streamKey\u0000originId` to after each XADD
+         * Channel the sync and cache mutation scripts publish `streamKey\u0000originId` to after each XADD
          */
         internal const val CHANNEL = "surf-redis:sync:wakeup"
         private const val MESSAGE_DELIMITER = '\u0000'

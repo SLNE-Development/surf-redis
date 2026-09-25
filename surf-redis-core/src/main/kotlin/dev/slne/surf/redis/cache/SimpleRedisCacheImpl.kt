@@ -5,6 +5,7 @@ import com.sksamuel.aedile.core.expireAfterAccess
 import com.sksamuel.aedile.core.expireAfterWrite
 import dev.slne.surf.api.core.util.logger
 import dev.slne.surf.redis.RedisApi
+import dev.slne.surf.redis.sync.SyncStreamWakeupBus
 import dev.slne.surf.redis.util.*
 import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
@@ -13,12 +14,10 @@ import org.redisson.api.RScript
 import org.redisson.api.RStreamReactive
 import org.redisson.api.stream.StreamMessageId
 import reactor.core.Disposable
-import reactor.core.publisher.Flux
 import reactor.core.publisher.Mono
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration
-import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 class SimpleRedisCacheImpl<K : Any, V : Any>(
@@ -88,6 +87,9 @@ class SimpleRedisCacheImpl<K : Any, V : Any>(
         api.redissonReactive.getStream(streamKey, Utf8StringCodec)
     }
 
+    private val wakeupBus = SyncStreamWakeupBus.getInstance(api)
+    private val wakeupSink = wakeupBus.register(streamKey)
+
     private val nearCache = Caffeine.newBuilder()
         .maximumSize(10_000)
         .expireAfterAccess(ttl)
@@ -115,7 +117,8 @@ class SimpleRedisCacheImpl<K : Any, V : Any>(
     override fun init(): Mono<Void> {
         if (isDisposed) return Mono.error(IllegalStateException("Cache '$namespace' is disposed"))
 
-        return stream.fetchLatestStreamId()
+        return wakeupBus.init()
+            .then(stream.fetchLatestStreamId())
             .doOnNext { cursorId.set(it) }
             .doOnSuccess {
                 trackDisposable(startPolling())
@@ -125,13 +128,13 @@ class SimpleRedisCacheImpl<K : Any, V : Any>(
     }
 
     override fun dispose0() {
+        wakeupBus.unregister(streamKey, wakeupSink)
         clearNearCacheOnly()
     }
 
     private fun startPolling() = stream.pollContinuously(
         cursorId = cursorId,
-        wakeups = Flux.never(),
-        pollInterval = 250.milliseconds,
+        wakeups = wakeupSink.asFlux(),
     ) {
         onSuccess { batch ->
             for ((messageId, fields) in batch) {
