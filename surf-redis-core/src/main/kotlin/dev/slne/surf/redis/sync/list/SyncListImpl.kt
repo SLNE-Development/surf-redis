@@ -14,8 +14,6 @@ import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
 import reactor.core.publisher.Mono
 import java.util.concurrent.atomic.AtomicLong
-import kotlin.concurrent.read
-import kotlin.concurrent.write
 import kotlin.time.Duration
 
 class SyncListImpl<T : Any> internal constructor(
@@ -90,9 +88,9 @@ class SyncListImpl<T : Any> internal constructor(
     }
 
     override fun snapshot() = lock.read { ObjectArrayList(list) }
-    override fun size(): Int = lock.read { list.size }
-    override fun get(index: Int): T = lock.read { list[index] }
-    override fun contains(element: T): Boolean = lock.read { list.contains(element) }
+    override fun size(): Int = lock.optimisticRead { list.size }
+    override fun get(index: Int): T = lock.optimisticRead { list[index] }
+    override fun contains(element: T): Boolean = lock.optimisticRead { list.contains(element) }
 
     override fun add(element: T) {
         val encoded = encodeValue(element)

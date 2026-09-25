@@ -14,8 +14,6 @@ import it.unimi.dsi.fastutil.objects.ObjectArrayList
 import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
 import reactor.core.publisher.Mono
-import kotlin.concurrent.read
-import kotlin.concurrent.write
 import kotlin.time.Duration
 
 class SyncMapImpl<K : Any, V : Any> internal constructor(
@@ -87,10 +85,10 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
     }
 
     override fun snapshot() = lock.read { map.clone() }
-    override fun size() = lock.read { map.size }
-    override fun containsKey(key: K) = lock.read { map.containsKey(key) }
-    override fun get(key: K): V? = lock.read { map[key] }
-    override fun isEmpty() = lock.read { map.isEmpty() }
+    override fun size() = lock.optimisticRead { map.size }
+    override fun containsKey(key: K) = lock.optimisticRead { map.containsKey(key) }
+    override fun get(key: K): V? = lock.optimisticRead { map[key] }
+    override fun isEmpty() = lock.optimisticRead { map.isEmpty() }
 
     override fun put(key: K, value: V): V? {
         val previous = mutate {
@@ -466,10 +464,11 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
 
     private inline fun applyRemoteChange(key: K, encodedOldValue: String?, change: () -> Unit): Boolean {
         val observedVersion: Long
-        val matches = lock.read {
+        val observed = lock.read {
             observedVersion = mutationVersion
-            matchesEncodedValue(key, encodedOldValue)
+            map[key]
         }
+        val matches = matchesEncoded(observed, encodedOldValue)
 
         return lock.write {
             val stillMatches = if (mutationVersion == observedVersion) matches
@@ -482,11 +481,12 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
         }
     }
 
-    private fun matchesEncodedValue(key: K, encodedValue: String?): Boolean {
-        val current = map[key]
-        return if (encodedValue == null) current == null
-            else current != null && encodeValue(current) == encodedValue
-    }
+    private fun matchesEncodedValue(key: K, encodedValue: String?): Boolean =
+        matchesEncoded(map[key], encodedValue)
+
+    private fun matchesEncoded(current: V?, encodedValue: String?): Boolean =
+        if (encodedValue == null) current == null
+        else current != null && encodeValue(current) == encodedValue
 
     private fun encodeKey(key: K): String = keyCodec.encode(key)
     private fun decodeKey(raw: String): K = keyCodec.decode(raw)

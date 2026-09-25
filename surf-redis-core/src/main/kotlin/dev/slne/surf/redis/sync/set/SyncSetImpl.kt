@@ -12,8 +12,6 @@ import dev.slne.surf.redis.util.Utf8StringCodec
 import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet
 import kotlinx.coroutines.reactor.awaitSingle
 import reactor.core.publisher.Mono
-import kotlin.concurrent.read
-import kotlin.concurrent.write
 import kotlin.time.Duration
 
 class SyncSetImpl<T : Any> internal constructor(
@@ -74,8 +72,8 @@ class SyncSetImpl<T : Any> internal constructor(
     }
 
     override fun snapshot() = lock.read { set.clone() }
-    override fun size() = lock.read { set.size }
-    override fun contains(element: T) = lock.read { set.contains(element) }
+    override fun size() = lock.optimisticRead { set.size }
+    override fun contains(element: T) = lock.optimisticRead { set.contains(element) }
 
     override fun add(element: T): Boolean {
         val added = lock.write { set.add(element) }

@@ -8,7 +8,6 @@ import org.jetbrains.annotations.MustBeInvokedByOverriders
 import reactor.core.publisher.Mono
 import reactor.util.function.Tuple2
 import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.time.Duration
 
 
@@ -25,7 +24,7 @@ abstract class AbstractSyncStructure<L, R : AbstractSyncStructure.VersionedSnaps
     override val id = id.replace(":", "_")
 
     private val listeners = CopyOnWriteArrayList<(L) -> Unit>()
-    protected val lock = ReentrantReadWriteLock()
+    internal val lock = SyncStructureLock()
 
     @MustBeInvokedByOverriders
     override fun init(): Mono<Void> {

@@ -5,7 +5,6 @@ import dev.slne.surf.redis.sync.map.SyncMapImpl
 import dev.slne.surf.redis.sync.set.SyncSetImpl
 import kotlinx.coroutines.runBlocking
 import reactor.core.publisher.Mono
-import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.time.Duration.Companion.minutes
 
 /** Uses real snapshot readers and installers with an in-memory Lua response. */
@@ -24,7 +23,7 @@ internal class SnapshotProbe(val kind: String, size: Int) : AutoCloseable {
         override fun encode(value: Item) = value.text
         override fun decode(value: String): Item {
             decodes++
-            return Item(value) { if (lock.isWriteLockedByCurrentThread) hashesUnderWriteLock++ }
+            return Item(value) { if (lock.owner === Thread.currentThread()) hashesUnderWriteLock++ }
         }
     }
     val structure: AbstractStreamSyncStructure<*, *> = when (kind) {
@@ -33,7 +32,7 @@ internal class SnapshotProbe(val kind: String, size: Int) : AutoCloseable {
         "list" -> SyncListImpl(fixture.api, "snapshot-probe", 1.minutes, codec)
         else -> error(kind)
     }
-    val lock: ReentrantReadWriteLock = lockField.get(structure) as ReentrantReadWriteLock
+    val lock: SyncStructureLock = lockField.get(structure) as SyncStructureLock
     private val versions = versionsField.get(structure) as StreamVersionTracker
 
     init {
