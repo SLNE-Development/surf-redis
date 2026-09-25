@@ -508,7 +508,7 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
                 resyncInFlight.set(false)
 
                 if (!isDisposed) {
-                    wakeupSink.tryEmitNext(Unit)
+                    wakeupSink.emitWakeup()
                 }
             }
             .doOnSubscribe { subscription -> resyncSubscription.update(Disposable(subscription::cancel)) }

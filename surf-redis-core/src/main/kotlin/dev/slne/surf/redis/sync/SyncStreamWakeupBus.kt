@@ -106,7 +106,27 @@ internal class SyncStreamWakeupBus private constructor(
         val streamSubscribers = subscribers[streamKey] ?: return
 
         for (sink in streamSubscribers) {
-            sink.tryEmitNext(Unit)
+            sink.emitWakeup()
         }
     }
+}
+
+/** Upper bound for waiting out a concurrent emission, whose `onNext` also dispatches the stream read. */
+private const val WAKEUP_COLLISION_BUDGET_NANOS = 1_000_000L
+
+/**
+ * Emits a wakeup, retrying only while another thread is inside an emission on this serialized sink.
+ *
+ * Wakeups are idempotent, so every other outcome (no subscriber, terminated sink, or a collision
+ * outlasting [collisionBudgetNanos]) drops the signal and leaves it to the interval fallback poll.
+ * Never throws for a failed emission.
+ */
+internal fun Sinks.Many<Unit>.emitWakeup(collisionBudgetNanos: Long = WAKEUP_COLLISION_BUDGET_NANOS) {
+    if (tryEmitNext(Unit) != Sinks.EmitResult.FAIL_NON_SERIALIZED) return
+
+    val deadline = System.nanoTime() + collisionBudgetNanos
+    do {
+        Thread.yield()
+        if (tryEmitNext(Unit) != Sinks.EmitResult.FAIL_NON_SERIALIZED) return
+    } while (System.nanoTime() - deadline < 0)
 }
