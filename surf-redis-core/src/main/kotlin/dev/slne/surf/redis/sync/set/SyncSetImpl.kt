@@ -7,7 +7,6 @@ import dev.slne.surf.redis.sync.AbstractSyncStructure
 import dev.slne.surf.redis.sync.AbstractSyncStructure.SimpleVersionedSnapshot
 import dev.slne.surf.redis.sync.SyncValueCodec
 import dev.slne.surf.redis.util.LuaScriptRegistry
-import dev.slne.surf.redis.util.RedisExpirableUtils
 import dev.slne.surf.redis.util.Utf8StringCodec
 import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet
 import kotlinx.coroutines.reactor.awaitSingle
@@ -61,14 +60,6 @@ class SyncSetImpl<T : Any> internal constructor(
             dataKey,
             Utf8StringCodec
         )
-    }
-
-    override fun init(): Mono<Void> {
-        return super.init()
-            .doOnSuccess {
-                trackDisposable(RedisExpirableUtils.refreshContinuously(ttl, remoteSet))
-            }
-            .then()
     }
 
     override fun snapshot() = lock.read { set.clone() }

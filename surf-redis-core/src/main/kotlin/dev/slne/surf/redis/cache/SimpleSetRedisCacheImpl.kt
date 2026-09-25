@@ -15,7 +15,6 @@ import kotlinx.coroutines.reactor.awaitSingleOrNull
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.KSerializer
-import org.redisson.api.RAtomicLongReactive
 import org.redisson.api.RScript
 import org.redisson.api.RStreamReactive
 import org.redisson.api.stream.StreamMessageId
@@ -109,9 +108,6 @@ class SimpleSetRedisCacheImpl<T : Any>(
     private val scriptExecutor = LuaScriptExecutor.getInstance(api, LuaScripts)
     private val stream: RStreamReactive<String, String> by lazy {
         api.redissonReactive.getStream(streamKey, Utf8StringCodec)
-    }
-    private val versionCounter: RAtomicLongReactive by lazy {
-        api.redissonReactive.getAtomicLong(versionKey)
     }
 
     private val nearValues = buildNearCache<T>(nearValueCacheSize)
@@ -208,7 +204,7 @@ class SimpleSetRedisCacheImpl<T : Any>(
     }
 
     private fun startRefreshingTtl(): Disposable {
-        return RedisExpirableUtils.refreshContinuously(ttl, stream, versionCounter)
+        return RedisExpirableUtils.refreshContinuously(api.redissonReactive.keys, ttl, streamKey, versionKey)
     }
 
     private fun handleStreamFault() {

@@ -5,7 +5,6 @@ import dev.slne.surf.redis.RedisApi
 import dev.slne.surf.redis.util.*
 import kotlinx.coroutines.reactor.awaitSingle
 import org.jetbrains.annotations.MustBeInvokedByOverriders
-import org.redisson.api.RAtomicLongReactive
 import org.redisson.api.RBucketReactive
 import org.redisson.api.RScript
 import org.redisson.api.RStreamReactive
@@ -61,11 +60,6 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
         api.redissonReactive.getBucket(codecKey, Utf8StringCodec)
     }
 
-    protected val versionCounter: RAtomicLongReactive by lazy {
-        api.redissonReactive.getAtomicLong(
-            versionKey
-        )
-    }
     protected val scriptExecutor = LuaScriptExecutor.getInstance(api, scriptRegistry)
 
     // Pre-computed per-instance constants reused on every Lua script invocation. Reduces
@@ -93,10 +87,12 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
                 trackDisposable(startPolling())
                 trackDisposable(
                     RedisExpirableUtils.refreshContinuously(
+                        api.redissonReactive.keys,
                         ttl,
-                        stream,
-                        versionCounter,
-                        *codecDescriptor?.let { arrayOf(codecBucket) }.orEmpty()
+                        dataKey,
+                        streamKey,
+                        versionKey,
+                        *codecDescriptor?.let { arrayOf(codecKey) }.orEmpty()
                     )
                 )
             }

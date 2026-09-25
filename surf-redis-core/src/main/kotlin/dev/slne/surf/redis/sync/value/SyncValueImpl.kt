@@ -7,7 +7,6 @@ import dev.slne.surf.redis.sync.AbstractSyncStructure
 import dev.slne.surf.redis.sync.AbstractSyncStructure.SimpleVersionedSnapshot
 import dev.slne.surf.redis.sync.SyncValueCodec
 import dev.slne.surf.redis.util.LuaScriptRegistry
-import dev.slne.surf.redis.util.RedisExpirableUtils
 import dev.slne.surf.redis.util.Utf8StringCodec
 import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
@@ -59,14 +58,6 @@ class SyncValueImpl<T : Any> internal constructor(
     }
     private val value = AtomicReference(defaultValue)
     private val encodedDefault = encodeValue(defaultValue)
-
-    override fun init(): Mono<Void> {
-        return super.init()
-            .doOnSuccess {
-                trackDisposable(RedisExpirableUtils.refreshContinuously(ttl, bucket))
-            }
-            .then()
-    }
 
     override fun get(): T = value.get()
 

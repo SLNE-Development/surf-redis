@@ -9,7 +9,6 @@ import dev.slne.surf.redis.util.*
 import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
 import kotlinx.serialization.KSerializer
-import org.redisson.api.RAtomicLongReactive
 import org.redisson.api.RScript
 import org.redisson.api.RStreamReactive
 import org.redisson.api.stream.StreamMessageId
@@ -87,9 +86,6 @@ class SimpleRedisCacheImpl<K : Any, V : Any>(
     private val stream: RStreamReactive<String, String> by lazy {
         api.redissonReactive.getStream(streamKey, Utf8StringCodec)
     }
-    private val versionCounter: RAtomicLongReactive by lazy {
-        api.redissonReactive.getAtomicLong(versionKey)
-    }
 
     private val nearCache = Caffeine.newBuilder()
         .maximumSize(10_000)
@@ -160,7 +156,7 @@ class SimpleRedisCacheImpl<K : Any, V : Any>(
     }
 
     private fun startRefreshingTtl(): Disposable {
-        return RedisExpirableUtils.refreshContinuously(ttl, stream, versionCounter)
+        return RedisExpirableUtils.refreshContinuously(api.redissonReactive.keys, ttl, streamKey, versionKey)
     }
 
     private fun handleStreamFault() {
