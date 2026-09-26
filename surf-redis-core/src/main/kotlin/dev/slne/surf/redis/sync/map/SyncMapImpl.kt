@@ -13,6 +13,9 @@ import it.unimi.dsi.fastutil.objects.ObjectArrayList
 import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
 import reactor.core.publisher.Mono
+import kotlin.contracts.ExperimentalContracts
+import kotlin.contracts.InvocationKind
+import kotlin.contracts.contract
 import kotlin.time.Duration
 
 class SyncMapImpl<K : Any, V : Any> internal constructor(
@@ -27,7 +30,8 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
     ttl,
     Registry,
     NAMESPACE,
-    CodecDescriptor.of(keyCodec, valueCodec)
+    CodecDescriptor.of(keyCodec, valueCodec),
+    EVENT_CLEAR,
 ), SyncMap<K, V> {
 
     companion object {
@@ -82,20 +86,21 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
     override fun isEmpty() = lock.optimisticRead { map.isEmpty() }
 
     override fun put(key: K, value: V): V? {
-        val previous = mutate {
-            map.put(key, value)
-        }
+        val previous: V?
+        val snapshotGeneration = mutateMapLocally { previous = map.put(key, value) }
 
         notifyListeners(SyncMapChange.Put(key, value, previous))
-        writeToRemote(PUT_SCRIPT, EVENT_PUT, encodeKey(key), encodeValue(value))
+        writeToRemote(snapshotGeneration, PUT_SCRIPT, EVENT_PUT, encodeKey(key), encodeValue(value))
 
         return previous
     }
 
     override fun remove(key: K): V? {
-        val old = mutate { map.remove(key) } ?: return null
+        val removed: V?
+        val snapshotGeneration = mutateMapLocally { removed = map.remove(key) }
+        val old = removed ?: return null
 
-        writeToRemote(REMOVE_SCRIPT, EVENT_REMOVE, encodeKey(key))
+        writeToRemote(snapshotGeneration, REMOVE_SCRIPT, EVENT_REMOVE, encodeKey(key))
         notifyListeners(SyncMapChange.Removed(key, old))
 
         return old
@@ -103,7 +108,7 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
 
     override fun removeIf(predicate: (K, V) -> Boolean): Boolean {
         val removed = ObjectArrayList<SyncMapChange.Removed<K, V>>()
-        mutate {
+        val snapshotGeneration = mutateMapLocally {
             val it = map.object2ObjectEntrySet().fastIterator()
             while (it.hasNext()) {
                 val e = it.next()
@@ -115,21 +120,21 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
         }
         if (removed.isEmpty) return false
 
-        removeManyRemote(removed)
+        removeManyRemote(snapshotGeneration, removed)
         for (change in removed) notifyListeners(change)
 
         return true
     }
 
     override fun clear() {
-        val had = mutate {
-            val h = map.isNotEmpty()
+        val had: Boolean
+        val snapshotGeneration = mutateMapLocally {
+            had = map.isNotEmpty()
             map.clear()
-            h
         }
         if (!had) return
 
-        writeToRemote(CLEAR_SCRIPT, EVENT_CLEAR)
+        writeToRemote(snapshotGeneration, CLEAR_SCRIPT, EVENT_CLEAR)
         notifyListeners(SyncMapChange.Cleared())
     }
 
@@ -166,19 +171,19 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
     }
 
     override suspend fun putAndAwait(key: K, value: V): V? {
-        val previous = mutate {
-            map.put(key, value)
-        }
+        val previous: V?
+        val snapshotGeneration = mutateMapLocally { previous = map.put(key, value) }
 
         notifyListeners(SyncMapChange.Put(key, value, previous))
 
-        putRemoteAwait(key, value).awaitSingle()
+        putRemoteAwait(snapshotGeneration, key, value).awaitSingle()
 
         return previous
     }
 
-    private fun putRemoteAwait(key: K, value: V): Mono<Long> {
+    private fun putRemoteAwait(snapshotGeneration: Long, key: K, value: V): Mono<Long> {
         return writeToRemoteAwait(
+            snapshotGeneration,
             PUT_SCRIPT,
             EVENT_PUT,
             encodeKey(key),
@@ -187,13 +192,14 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
     }
 
     override suspend fun removeAndAwait(key: K): V? {
-        val old = mutate {
-            map.remove(key)
-        } ?: return null
+        val removed: V?
+        val snapshotGeneration = mutateMapLocally { removed = map.remove(key) }
+        val old = removed ?: return null
 
         notifyListeners(SyncMapChange.Removed(key, old))
 
         writeToRemoteAwait(
+            snapshotGeneration,
             REMOVE_SCRIPT,
             EVENT_REMOVE,
             encodeKey(key),
@@ -207,7 +213,7 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
     ): Boolean {
         val removed = ObjectArrayList<SyncMapChange.Removed<K, V>>()
 
-        mutate {
+        val snapshotGeneration = mutateMapLocally {
             val iterator = map.object2ObjectEntrySet().fastIterator()
 
             while (iterator.hasNext()) {
@@ -233,6 +239,7 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
         }
 
         writeBatchToRemoteAwait(
+            snapshotGeneration,
             REMOVE_MANY_SCRIPT,
             EVENT_REMOVE,
             *encodedKeys,
@@ -242,10 +249,10 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
     }
 
     override suspend fun clearAndAwait() {
-        val hadEntries = mutate {
-            val had = map.isNotEmpty()
+        val hadEntries: Boolean
+        val snapshotGeneration = mutateMapLocally {
+            hadEntries = map.isNotEmpty()
             map.clear()
-            had
         }
 
         if (!hadEntries) {
@@ -255,6 +262,7 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
         notifyListeners(SyncMapChange.Cleared())
 
         writeToRemoteAwait(
+            snapshotGeneration,
             CLEAR_SCRIPT,
             EVENT_CLEAR,
         ).awaitSingle()
@@ -381,9 +389,8 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
 
         mutate {
             map = decoded
+            super.overrideFromRemote(raw)
         }
-
-        super.overrideFromRemote(raw)
     }
 
     private fun decodeSnapshot(raw: Map<String, String>): Object2ObjectOpenHashMap<K, V> {
@@ -394,9 +401,9 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
         return decoded
     }
 
-    private fun removeManyRemote(removed: List<SyncMapChange.Removed<K, V>>) {
+    private fun removeManyRemote(snapshotGeneration: Long, removed: List<SyncMapChange.Removed<K, V>>) {
         val encKeys = Array(removed.size) { i -> encodeKey(removed[i].key) }
-        writeBatchToRemote(REMOVE_MANY_SCRIPT, EVENT_REMOVE, *encKeys)
+        writeBatchToRemote(snapshotGeneration, REMOVE_MANY_SCRIPT, EVENT_REMOVE, *encKeys)
     }
 
     override fun onStreamEvent(type: String, data: StreamEventData) = when (type) {
@@ -448,9 +455,21 @@ class SyncMapImpl<K : Any, V : Any> internal constructor(
         if (had) notifyListeners(SyncMapChange.Cleared())
     }
 
-    private inline fun <T> mutate(action: () -> T): T = lock.write {
-        mutationVersion++
-        action()
+    @OptIn(ExperimentalContracts::class)
+    private inline fun <T> mutate(action: () -> T): T {
+        contract { callsInPlace(action, InvocationKind.EXACTLY_ONCE) }
+        return lock.write {
+            mutationVersion++
+            action()
+        }
+    }
+
+    @OptIn(ExperimentalContracts::class)
+    private inline fun mutateMapLocally(action: () -> Unit): Long {
+        contract {
+            callsInPlace(action, InvocationKind.EXACTLY_ONCE)
+        }
+        return mutateLocally { mutate(action) }
     }
 
     private inline fun applyRemoteChange(key: K, encodedOldValue: String?, change: () -> Unit): Boolean {

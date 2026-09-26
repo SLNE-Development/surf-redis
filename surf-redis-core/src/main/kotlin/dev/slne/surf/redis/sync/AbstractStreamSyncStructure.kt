@@ -13,9 +13,14 @@ import reactor.core.Disposable
 import reactor.core.Disposables
 import reactor.core.publisher.Mono
 import reactor.util.retry.Retry
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
-import java.util.function.Consumer
+import java.util.function.ToLongFunction
+import kotlin.contracts.ExperimentalContracts
+import kotlin.contracts.InvocationKind
+import kotlin.contracts.contract
 import kotlin.time.Duration
 import kotlin.time.toJavaDuration
 
@@ -25,7 +30,11 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
     ttl: Duration,
     scriptRegistry: LuaScriptRegistry,
     structureNamespace: String,
-    private val codecDescriptor: String? = null
+    private val codecDescriptor: String? = null,
+    /**
+     * Clear event type used for key-aware conflict detection, or `null` if unsupported.
+     */
+    private val clearEventType: String? = null,
 ) : AbstractSyncStructure<L, R>(api, id, ttl) {
     companion object {
         private val log = logger()
@@ -35,6 +44,13 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
 
         private const val MESSAGE_DELIMITER = '\u0000'
         private const val MAX_STREAM_LENGTH = 10_000
+        private val NO_ARGUMENTS = emptyArray<String>()
+
+        private fun Any?.asLongOrZero(): Long = when (this) {
+            is Number -> toLong()
+            null -> 0L
+            else -> toString().toLongOrNull() ?: 0L
+        }
     }
 
     protected val instanceId: String = api.clientId
@@ -47,6 +63,16 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
 
     private val cursorId = AtomicReference(StreamMessageId(0, 0))
     private val resyncInFlight = AtomicBoolean(false)
+
+    private val trackedOwnWrites = ConcurrentLinkedQueue<TrackedOwnWrite>()
+    private val localWriteSequence = AtomicLong()
+
+    @Volatile
+    internal var snapshotGeneration = 0L
+        private set
+
+    @Volatile
+    private var snapshotVersion = 0L
 
     private val resyncSubscription = Disposables.swap().also(::trackDisposable)
 
@@ -67,7 +93,6 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
     private val msgDelimiterStr: String = MESSAGE_DELIMITER.toString()
     private val streamMaxLengthStr: String = MAX_STREAM_LENGTH.toString()
     private val scriptKeys: List<Any> = listOf(dataKey, streamKey, versionKey)
-    private val writeVersionConsumer = Consumer<Long>(::handleWriteVersion)
 
     private val wakeupBus = SyncStreamWakeupBus.getInstance(api)
     private val wakeupSink = wakeupBus.register(streamKey)
@@ -99,7 +124,12 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
             .then()
     }
 
-    private fun processStreamEvent(type: String, msg: String) {
+    /**
+     * Processes a stream event.
+     *
+     * @return whether the stream cursor may advance past this event
+     */
+    private fun processStreamEvent(type: String, msg: String): Boolean {
         // Parse "version<DELIM>origin<DELIM>payload" without allocating an ArrayList per message.
         val firstDelim = msg.indexOf(MESSAGE_DELIMITER)
         if (firstDelim < 0) {
@@ -109,7 +139,7 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
                     type,
                     msg
                 )
-            return
+            return true
         }
         val secondDelim = msg.indexOf(MESSAGE_DELIMITER, firstDelim + 1)
         if (secondDelim < 0) {
@@ -127,7 +157,7 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
                     type,
                     msg
                 )
-            return
+            return true
         }
 
         val hasEmptyOriginPart = (firstDelim + 1 until secondDelim).all { msg[it].isWhitespace() }
@@ -138,20 +168,114 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
                     type,
                     msg
                 )
+            return true
+        }
+
+        val lengthBetweenDelimiters = secondDelim - firstDelim - 1
+        val isOwnEvent = lengthBetweenDelimiters == instanceId.length &&
+                msg.regionMatches(firstDelim + 1, instanceId, 0, instanceId.length)
+
+        if (
+            isOwnEvent &&
+            version == versions.current + 1L &&
+            hasUnresolvedWriteFromOlderSnapshot()
+        ) {
+            return false
+        }
+
+        if (applyVersion(version)) {
+            if (isOwnEvent) {
+                reapplyIfOverwrittenBySnapshot(type, version, msg, secondDelim + 1)
+            } else {
+                val origin = msg.substring(firstDelim + 1, secondDelim)
+                applyForeignEvent(type, StreamEventData(version, origin, msg.substring(secondDelim + 1)))
+            }
+        }
+
+        removeWritesCoveredBy(version)
+        return true
+    }
+
+    private fun applyForeignEvent(type: String, data: StreamEventData) {
+        if (
+            supportsKeyAwareGapRecovery &&
+            trackedOwnWrites.isNotEmpty() &&
+            conflictsWithTrackedOwnWrites(type, data)
+        ) {
+            requestResync()
+        } else {
+            onStreamEvent(type, data)
+        }
+    }
+
+    private fun removeWritesCoveredBy(version: Long) {
+        if (trackedOwnWrites.isNotEmpty()) {
+            trackedOwnWrites.removeIf { it.lastStreamVersion <= version }
+        }
+    }
+
+    private fun conflictsWithTrackedOwnWrites(type: String, data: StreamEventData): Boolean {
+        val key = if (type == clearEventType) null else data.payload(0)
+        val currentSnapshotGeneration = snapshotGeneration
+        val currentSnapshotVersion = snapshotVersion
+
+        for (write in trackedOwnWrites) {
+            if (
+                write.lastStreamVersion <= data.version ||
+                write.wasOverwrittenBySnapshot(currentSnapshotGeneration, currentSnapshotVersion)
+            ) {
+                continue
+            }
+
+            if (write.conflictsWith(key)) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private fun hasUnresolvedWriteFromOlderSnapshot(): Boolean {
+        if (trackedOwnWrites.isEmpty()) {
+            return false
+        }
+
+        val currentSnapshotGeneration = snapshotGeneration
+        return trackedOwnWrites.any {
+            !it.isResolved && it.snapshotGeneration < currentSnapshotGeneration
+        }
+    }
+
+    private fun reapplyIfOverwrittenBySnapshot(
+        type: String,
+        version: Long,
+        msg: String,
+        payloadStart: Int,
+    ) {
+        if (trackedOwnWrites.isEmpty()) {
             return
         }
 
-        if (!applyVersion(version)) return
+        val write = trackedOwnWrites.find { write ->
+            write.isResolved && version in write.firstStreamVersion..write.lastStreamVersion
+        } ?: return
 
-        val lengthBetweenDelimiters = secondDelim - firstDelim - 1
-        if (lengthBetweenDelimiters == instanceId.length &&
-            msg.regionMatches(firstDelim + 1, instanceId, 0, instanceId.length)
-        ) return // Ignore own events
+        if (
+            !write.wasOverwrittenBySnapshot(
+                snapshotGeneration,
+                snapshotVersion,
+            )
+        ) {
+            return
+        }
 
-        val origin = msg.substring(firstDelim + 1, secondDelim)
-        val payload = msg.substring(secondDelim + 1)
+        val data = StreamEventData(version, instanceId, msg.substring(payloadStart))
 
-        onStreamEvent(type, StreamEventData(version, origin, payload))
+        if (conflictsWithTrackedOwnWrites(type, data)) {
+            return requestResync()
+        }
+
+        onStreamEvent(type, data)
     }
 
     private fun parseVersion(message: String, end: Int): Long? {
@@ -235,31 +359,219 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
 
     protected abstract fun onStreamEvent(type: String, data: StreamEventData)
 
+    private val supportsKeyAwareGapRecovery = clearEventType != null
+
+    /**
+     * Applies [mutation] locally and returns the current snapshot generation.
+     */
+    @OptIn(ExperimentalContracts::class)
+    internal inline fun mutateLocally(mutation: () -> Unit): Long {
+        contract {
+            callsInPlace(mutation, InvocationKind.EXACTLY_ONCE)
+        }
+
+        return lock.write {
+            mutation()
+            snapshotGeneration
+        }
+    }
+
     protected fun writeToRemote(
+        snapshotGeneration: Long,
         script: String,
         eventType: String,
         vararg values: String
     ) {
-        executeWrite(script, eventType, values)
+        executeWrite(trackOwnWrite(eventType, values, snapshotGeneration), script, eventType, values)
             .subscribe({}, {})
     }
 
     protected fun writeToRemoteAwait(
+        snapshotGeneration: Long,
         script: String,
         eventType: String,
         vararg values: String,
     ): Mono<Long> {
-        return executeWrite(script, eventType, values)
+        return executeWrite(trackOwnWrite(eventType, values, snapshotGeneration), script, eventType, values)
     }
 
     private fun executeWrite(
+        write: TrackedOwnWrite,
         script: String,
         eventType: String,
         values: Array<out String>,
     ): Mono<Long> {
         return executeScript<Long>(script, RScript.ReturnType.LONG, eventType, values)
-            .doOnNext(writeVersionConsumer)
+            .resolveWriteOnNext(write) { it }
             .resyncOnScriptError(script)
+    }
+
+    private fun trackOwnWrite(
+        eventType: String,
+        values: Array<out String>,
+        snapshotGeneration: Long,
+        batch: Boolean = false,
+    ): TrackedOwnWrite {
+        val keyAware = supportsKeyAwareGapRecovery
+
+        val write = TrackedOwnWrite(
+            localSequence = if (keyAware) localWriteSequence.incrementAndGet() else 0L,
+            arguments = if (keyAware) values else NO_ARGUMENTS,
+            isBatch = batch,
+            isKeyScoped = keyAware && eventType != clearEventType,
+            snapshotGeneration = snapshotGeneration,
+        )
+
+        trackedOwnWrites.add(write)
+        return write
+    }
+
+    private fun <T : Any> Mono<T>.resolveWriteOnNext(
+        write: TrackedOwnWrite,
+        version: ToLongFunction<T>,
+    ): Mono<T> = resolveWriteOnNext(write, version, version)
+
+    private fun <T : Any> Mono<T>.resolveWriteOnNext(
+        write: TrackedOwnWrite,
+        first: ToLongFunction<T>,
+        last: ToLongFunction<T>,
+    ): Mono<T> = doOnNext {
+        resolveTrackedWrite(write, first.applyAsLong(it), last.applyAsLong(it))
+    }.doFinally {
+        stopTrackingUnresolved(write)
+    }
+
+    private fun resolveTrackedWrite(
+        write: TrackedOwnWrite,
+        firstStreamVersion: Long,
+        lastStreamVersion: Long,
+    ) {
+        if (lastStreamVersion <= 0L) {
+            trackedOwnWrites.remove(write)
+
+            if (firstStreamVersion != 0L) {
+                requestResync()
+            }
+
+            return resumeDeferredPollIfNeeded(write)
+        }
+
+        val currentSnapshotGeneration = snapshotGeneration
+
+        write.firstStreamVersion = firstStreamVersion
+        write.lastStreamVersion = lastStreamVersion
+
+        if (
+            write.wasOverwrittenBySnapshot(
+                currentSnapshotGeneration,
+                snapshotVersion,
+            )
+        ) {
+            return wakeupSink.emitWakeup()
+        }
+
+        if (
+            supportsKeyAwareGapRecovery &&
+            hasConflictingWriteReorder(write)
+        ) {
+            requestResync()
+        }
+
+        val outcome = if (write.isBatch) {
+            versions.applyRange(firstStreamVersion, lastStreamVersion)
+        } else {
+            versions.apply(lastStreamVersion)
+        }
+
+        val recoverFromStream =
+            outcome == StreamVersionTracker.Outcome.RESYNC &&
+                    supportsKeyAwareGapRecovery &&
+                    !write.isBatch &&
+                    versions.isBootstrapped
+
+        if (recoverFromStream) {
+            wakeupSink.emitWakeup()
+        } else if (outcome == StreamVersionTracker.Outcome.RESYNC) {
+            requestResync()
+        }
+
+        // The snapshot changed while the reply was being processed.
+        if (snapshotGeneration != currentSnapshotGeneration) {
+            requestResync()
+        }
+
+        if (!recoverFromStream) {
+            stopTrackingIfSafe(write)
+        }
+
+        resumeDeferredPollIfNeeded(write)
+    }
+
+    /**
+     * Returns whether Redis reordered this write against another conflicting local write.
+     */
+    private fun hasConflictingWriteReorder(resolved: TrackedOwnWrite): Boolean {
+        val currentSnapshotGeneration = snapshotGeneration
+        val currentSnapshotVersion = snapshotVersion
+
+        fun isReordered(other: TrackedOwnWrite) =
+            !other.wasOverwrittenBySnapshot(currentSnapshotGeneration, currentSnapshotVersion) &&
+                    resolved.wasReorderedWith(other)
+
+        resolved.resolvedConflictsWhilePending?.let { conflicts ->
+            for (other in conflicts) {
+                if (isReordered(other)) {
+                    return true
+                }
+            }
+        }
+
+        for (other in trackedOwnWrites) {
+            if (
+                other === resolved ||
+                !resolved.conflictsWith(other)
+            ) {
+                continue
+            }
+
+            if (!other.isResolved) {
+                other.addResolvedConflict(resolved)
+
+                if (!other.isResolved) {
+                    continue
+                }
+            }
+
+            if (isReordered(other)) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private fun stopTrackingIfSafe(write: TrackedOwnWrite) {
+        if (
+            write.snapshotGeneration != TrackedOwnWrite.UNRESOLVED_VERSION &&
+            !resyncInFlight.get()
+        ) {
+            trackedOwnWrites.remove(write)
+        }
+    }
+
+    private fun stopTrackingUnresolved(write: TrackedOwnWrite) {
+        if (
+            !write.isResolved &&
+            trackedOwnWrites.remove(write)
+        ) {
+            resumeDeferredPollIfNeeded(write)
+        }
+    }
+
+    private fun resumeDeferredPollIfNeeded(write: TrackedOwnWrite) {
+        if (write.snapshotGeneration < snapshotGeneration) {
+            wakeupSink.emitWakeup()
+        }
     }
 
     private fun <T : Any> executeScript(
@@ -297,14 +609,6 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
             requestResync()
         }
 
-    private fun handleWriteVersion(newVersion: Long) {
-        when {
-            newVersion < 0L -> requestResync()
-            newVersion == 0L -> Unit
-            else -> applyVersion(newVersion)
-        }
-    }
-
     /**
      * Executes a mutation script that returns `{version, payload, extra?}` and applies the appended
      * event to the local view as this node's own event.
@@ -314,19 +618,20 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
         eventType: String,
         vararg values: String,
     ): RemoteWriteResult {
+        val generationAtIssue = snapshotGeneration
+        val write = trackOwnWrite(eventType, values, TrackedOwnWrite.UNRESOLVED_VERSION)
         val raw = executeScript<List<Any>>(script, RScript.ReturnType.LIST, eventType, values)
+            .resolveWriteOnNext(write) { it.getOrNull(0).asLongOrZero() }
             .resyncOnScriptError(script)
             .awaitSingle()
 
         val version = raw.getOrNull(0).asLongOrZero()
-        handleWriteVersion(version)
-
         val event = if (version > 0L) {
             StreamEventData(version, instanceId, raw.getOrNull(1)?.toString().orEmpty())
         } else {
             null
         }
-        if (event != null) applyOwnEvent(eventType, event)
+        if (event != null) applyRemoteFirstOwnEvent(write, generationAtIssue, eventType, event)
 
         return RemoteWriteResult(event, raw.getOrNull(2)?.toString())
     }
@@ -346,14 +651,41 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
         vararg values: String,
         payload: String = values.joinToString(msgDelimiterStr),
     ): Boolean {
-        val version = executeWrite(script, eventType, values).awaitSingle()
+        val generationAtIssue = snapshotGeneration
+        val write = trackOwnWrite(eventType, values, TrackedOwnWrite.UNRESOLVED_VERSION)
+        val version = executeWrite(write, script, eventType, values).awaitSingle()
         if (version <= 0L) return false
 
-        applyOwnEvent(eventType, StreamEventData(version, instanceId, payload))
+        applyRemoteFirstOwnEvent(write, generationAtIssue, eventType, StreamEventData(version, instanceId, payload))
         return true
     }
 
     protected fun joinPayload(vararg parts: String): String = parts.joinToString(msgDelimiterStr)
+
+    /**
+     * Applies an own event produced by a remote-first write.
+     */
+    private fun applyRemoteFirstOwnEvent(
+        write: TrackedOwnWrite,
+        generationAtIssue: Long,
+        eventType: String,
+        event: StreamEventData,
+    ) {
+        val generationBeforeApply = snapshotGeneration
+
+        applyOwnEvent(eventType, event)
+
+        // A snapshot changed while the write was in flight or while its event was applied.
+        if (
+            generationBeforeApply != generationAtIssue ||
+            snapshotGeneration != generationBeforeApply
+        ) {
+            requestResync()
+        }
+
+        write.snapshotGeneration = generationBeforeApply
+        stopTrackingIfSafe(write)
+    }
 
     private fun applyOwnEvent(eventType: String, event: StreamEventData) {
         try {
@@ -378,23 +710,31 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
         }
 
     protected fun writeBatchToRemote(
+        snapshotGeneration: Long,
         script: String,
         eventType: String,
         vararg values: String,
     ) {
-        executeBatchWrite(script, eventType, values)
+        executeBatchWrite(trackOwnWrite(eventType, values, snapshotGeneration, batch = true), script, eventType, values)
             .subscribe({}, {})
     }
 
     protected fun writeBatchToRemoteAwait(
+        snapshotGeneration: Long,
         script: String,
         eventType: String,
         vararg values: String,
     ): Mono<VersionRange> {
-        return executeBatchWrite(script, eventType, values)
+        return executeBatchWrite(
+            trackOwnWrite(eventType, values, snapshotGeneration, batch = true),
+            script,
+            eventType,
+            values
+        )
     }
 
     private fun executeBatchWrite(
+        write: TrackedOwnWrite,
         script: String,
         eventType: String,
         values: Array<out String>,
@@ -406,11 +746,7 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
                     last = raw.getOrNull(1).asLongOrZero(),
                 )
             }
-            .doOnNext { range ->
-                if (range.first != 0L || range.last != 0L) {
-                    applyVersionRange(range.first, range.last)
-                }
-            }
+            .resolveWriteOnNext(write, VersionRange::first, VersionRange::last)
             .resyncOnScriptError(script)
     }
 
@@ -423,19 +759,7 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
         )
     }
 
-    private fun Any?.asLongOrZero(): Long = when (this) {
-        is Number -> toLong()
-        null -> 0L
-        else -> toString().toLongOrNull() ?: 0L
-    }
-
-    private fun applyVersionRange(first: Long, last: Long) {
-        if (versions.applyRange(first, last) == StreamVersionTracker.Outcome.RESYNC) {
-            requestResync()
-        }
-    }
-
-    protected fun applyVersion(ver: Long): Boolean {
+    private fun applyVersion(ver: Long): Boolean {
         return when (versions.apply(ver)) {
             StreamVersionTracker.Outcome.APPLIED -> true
             StreamVersionTracker.Outcome.SKIPPED -> false
@@ -461,7 +785,7 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
                 val msg = fields[STREAM_FIELD_MSG] ?: continue
 
                 try {
-                    processStreamEvent(type, msg)
+                    if (!processStreamEvent(type, msg)) break
                     cursorId.set(messageId)
 
                     if (resyncInFlight.get()) {
@@ -510,9 +834,19 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
         super.dispose0()
     }
 
+    /**
+     * Records [raw] as the current snapshot.
+     *
+     * Must be called under the structure write lock.
+     */
     @MustBeInvokedByOverriders
     override fun overrideFromRemote(raw: R) {
         versions.bootstrap(raw.version)
+
+        snapshotVersion = raw.version
+        snapshotGeneration++
+
+        removeWritesCoveredBy(raw.version)
     }
 
     protected data class StreamEventData(
@@ -535,6 +869,73 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
             return if (end < 0) encodedPayload.substring(start) else encodedPayload.substring(start, end)
         }
 
+    }
+
+    /**
+     * Tracks an own write until its local and stream ordering is safe to forget.
+     */
+    private class TrackedOwnWrite(
+        val localSequence: Long,
+        val arguments: Array<out String>,
+        val isBatch: Boolean,
+        val isKeyScoped: Boolean,
+        @Volatile var snapshotGeneration: Long,
+    ) {
+
+        @Volatile
+        var firstStreamVersion: Long = UNRESOLVED_VERSION
+
+        @Volatile
+        var lastStreamVersion: Long = UNRESOLVED_VERSION
+
+
+        val isResolved: Boolean get() = lastStreamVersion != UNRESOLVED_VERSION
+
+        fun conflictsWith(key: String?): Boolean {
+            return !isKeyScoped ||
+                    key == null ||
+                    if (isBatch) {
+                        key in arguments
+                    } else {
+                        arguments[0] == key
+                    }
+        }
+
+        fun conflictsWith(other: TrackedOwnWrite): Boolean = when {
+            !isKeyScoped || !other.isKeyScoped -> true
+            other.isBatch -> other.arguments.any(::conflictsWith)
+            else -> conflictsWith(other.arguments[0])
+        }
+
+        fun wasOverwrittenBySnapshot(
+            currentSnapshotGeneration: Long,
+            currentSnapshotVersion: Long,
+        ): Boolean =
+            snapshotGeneration < currentSnapshotGeneration &&
+                    lastStreamVersion > currentSnapshotVersion
+
+        @Volatile
+        var resolvedConflictsWhilePending: ConcurrentLinkedQueue<TrackedOwnWrite>? = null
+            private set
+
+        fun addResolvedConflict(other: TrackedOwnWrite) {
+            val conflicts = resolvedConflictsWhilePending ?: synchronized(this) {
+                resolvedConflictsWhilePending
+                    ?: ConcurrentLinkedQueue<TrackedOwnWrite>().also {
+                        resolvedConflictsWhilePending = it
+                    }
+            }
+
+            conflicts.add(other)
+        }
+
+        fun wasReorderedWith(other: TrackedOwnWrite): Boolean =
+            (localSequence < other.localSequence) !=
+                    (lastStreamVersion < other.lastStreamVersion)
+
+        companion object {
+            const val UNRESOLVED_VERSION = Long.MAX_VALUE
+        }
     }
 
     protected data class VersionRange(

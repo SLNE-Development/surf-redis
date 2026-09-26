@@ -24,7 +24,8 @@ class SyncSetImpl<T : Any> internal constructor(
     ttl,
     Scripts,
     NAMESPACE,
-    elementCodec.descriptor
+    elementCodec.descriptor,
+    EVENT_CLEARED,
 ),
     SyncSet<T> {
 
@@ -67,49 +68,49 @@ class SyncSetImpl<T : Any> internal constructor(
     override fun contains(element: T) = lock.optimisticRead { set.contains(element) }
 
     override fun add(element: T): Boolean {
-        val added = lock.write { set.add(element) }
+        val added: Boolean
+        val snapshotGeneration = mutateLocally { added = set.add(element) }
         if (!added) return false
 
-        writeToRemote(ADD_SCRIPT, EVENT_ADDED, encodeValue(element))
+        writeToRemote(snapshotGeneration, ADD_SCRIPT, EVENT_ADDED, encodeValue(element))
         notifyListeners(SyncSetChange.Added(element))
 
         return true
     }
 
     override fun remove(element: T): Boolean {
-        val removed = lock.write { set.remove(element) }
+        val removed: Boolean
+        val snapshotGeneration = mutateLocally { removed = set.remove(element) }
         if (!removed) return false
 
-        writeToRemote(REMOVE_SCRIPT, EVENT_REMOVED, encodeValue(element))
+        writeToRemote(snapshotGeneration, REMOVE_SCRIPT, EVENT_REMOVED, encodeValue(element))
         notifyListeners(SyncSetChange.Removed(element))
         return true
     }
 
     override fun clear() {
-        val hadElements = lock.write {
-            val had = set.isNotEmpty()
+        val hadElements: Boolean
+        val snapshotGeneration = mutateLocally {
+            hadElements = set.isNotEmpty()
             set.clear()
-            had
         }
         if (!hadElements) return
 
-        writeToRemote(CLEAR_SCRIPT, EVENT_CLEARED)
+        writeToRemote(snapshotGeneration, CLEAR_SCRIPT, EVENT_CLEARED)
         notifyListeners(SyncSetChange.Cleared)
     }
 
     override fun removeIf(predicate: (T) -> Boolean): Boolean {
-        val removedElements = lock.write {
-            val removed = ObjectOpenHashSet<T>()
+        val removedElements = ObjectOpenHashSet<T>()
+        val snapshotGeneration = mutateLocally {
             val iterator = set.iterator()
             while (iterator.hasNext()) {
                 val element = iterator.next()
                 if (predicate(element)) {
                     iterator.remove()
-                    removed.add(element)
+                    removedElements.add(element)
                 }
             }
-
-            removed
         }
 
         if (removedElements.isEmpty()) return false
@@ -117,7 +118,7 @@ class SyncSetImpl<T : Any> internal constructor(
         val iter = removedElements.iterator()
         val encoded = Array(removedElements.size) { encodeValue(iter.next()) }
 
-        removeRemoteMany(encoded)
+        removeRemoteMany(snapshotGeneration, encoded)
         removedElements.forEach { element ->
             notifyListeners(SyncSetChange.Removed(element))
         }
@@ -125,9 +126,8 @@ class SyncSetImpl<T : Any> internal constructor(
     }
 
     override suspend fun addAndAwait(element: T): Boolean {
-        val added = lock.write {
-            set.add(element)
-        }
+        val added: Boolean
+        val snapshotGeneration = mutateLocally { added = set.add(element) }
 
         if (!added) {
             return false
@@ -136,6 +136,7 @@ class SyncSetImpl<T : Any> internal constructor(
         notifyListeners(SyncSetChange.Added(element))
 
         writeToRemoteAwait(
+            snapshotGeneration,
             ADD_SCRIPT,
             EVENT_ADDED,
             encodeValue(element),
@@ -145,9 +146,8 @@ class SyncSetImpl<T : Any> internal constructor(
     }
 
     override suspend fun removeAndAwait(element: T): Boolean {
-        val removed = lock.write {
-            set.remove(element)
-        }
+        val removed: Boolean
+        val snapshotGeneration = mutateLocally { removed = set.remove(element) }
 
         if (!removed) {
             return false
@@ -156,6 +156,7 @@ class SyncSetImpl<T : Any> internal constructor(
         notifyListeners(SyncSetChange.Removed(element))
 
         writeToRemoteAwait(
+            snapshotGeneration,
             REMOVE_SCRIPT,
             EVENT_REMOVED,
             encodeValue(element),
@@ -167,8 +168,8 @@ class SyncSetImpl<T : Any> internal constructor(
     override suspend fun removeIfAndAwait(
         predicate: (T) -> Boolean,
     ): Boolean {
-        val removedElements = lock.write {
-            val removed = ObjectOpenHashSet<T>()
+        val removedElements = ObjectOpenHashSet<T>()
+        val snapshotGeneration = mutateLocally {
             val iterator = set.iterator()
 
             while (iterator.hasNext()) {
@@ -176,11 +177,9 @@ class SyncSetImpl<T : Any> internal constructor(
 
                 if (predicate(element)) {
                     iterator.remove()
-                    removed.add(element)
+                    removedElements.add(element)
                 }
             }
-
-            removed
         }
 
         if (removedElements.isEmpty()) {
@@ -197,6 +196,7 @@ class SyncSetImpl<T : Any> internal constructor(
         }
 
         writeBatchToRemoteAwait(
+            snapshotGeneration,
             REMOVE_MANY_SCRIPT,
             EVENT_REMOVED,
             *encoded,
@@ -206,10 +206,10 @@ class SyncSetImpl<T : Any> internal constructor(
     }
 
     override suspend fun clearAndAwait() {
-        val hadElements = lock.write {
-            val had = set.isNotEmpty()
+        val hadElements: Boolean
+        val snapshotGeneration = mutateLocally {
+            hadElements = set.isNotEmpty()
             set.clear()
-            had
         }
 
         if (!hadElements) {
@@ -219,6 +219,7 @@ class SyncSetImpl<T : Any> internal constructor(
         notifyListeners(SyncSetChange.Cleared)
 
         writeToRemoteAwait(
+            snapshotGeneration,
             CLEAR_SCRIPT,
             EVENT_CLEARED,
         ).awaitSingle()
@@ -242,8 +243,8 @@ class SyncSetImpl<T : Any> internal constructor(
         writeToRemoteAndApplyAwait(CLEAR_SCRIPT, EVENT_CLEARED)
     }
 
-    private fun removeRemoteMany(encodedValues: Array<String>) {
-        writeBatchToRemote(REMOVE_MANY_SCRIPT, EVENT_REMOVED, *encodedValues)
+    private fun removeRemoteMany(snapshotGeneration: Long, encodedValues: Array<String>) {
+        writeBatchToRemote(snapshotGeneration, REMOVE_MANY_SCRIPT, EVENT_REMOVED, *encodedValues)
     }
 
     override fun onStreamEvent(type: String, data: StreamEventData) = when (type) {
@@ -308,8 +309,8 @@ class SyncSetImpl<T : Any> internal constructor(
         val decoded = decodeSnapshot(raw.value)
         lock.write {
             set = decoded
+            super.overrideFromRemote(raw)
         }
-        super.overrideFromRemote(raw)
     }
 
     private fun decodeSnapshot(raw: Set<String>): ObjectOpenHashSet<T> =

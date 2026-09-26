@@ -18,11 +18,11 @@ internal class RemoteWriteProbe(api: RedisApi) :
 
     fun bootstrap() = overrideFromRemote(SimpleVersionedSnapshot(Unit, 0))
 
-    fun write(values: Array<String>) = writeToRemoteAwait("set", "SET", *values)
-    fun fire(values: Array<String>) = writeToRemote("set", "SET", *values)
-    fun batch(values: Array<String>) = writeBatchToRemoteAwait("set", "SET", *values)
+    fun write(values: Array<String>) = writeToRemoteAwait(mutateLocally {}, "set", "SET", *values)
+    fun fire(values: Array<String>) = writeToRemote(mutateLocally {}, "set", "SET", *values)
+    fun batch(values: Array<String>) = writeBatchToRemoteAwait(mutateLocally {}, "set", "SET", *values)
         .map { it.first to it.last }
-    fun fireBatch(values: Array<String>) = writeBatchToRemote("set", "SET", *values)
+    fun fireBatch(values: Array<String>) = writeBatchToRemote(mutateLocally {}, "set", "SET", *values)
     fun apply(values: Array<String>) = runBlocking {
         writeToRemoteAndApplyAwait("set", "SET", *values)
     }

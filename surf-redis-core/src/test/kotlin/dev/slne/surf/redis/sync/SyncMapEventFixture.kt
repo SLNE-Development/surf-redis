@@ -17,6 +17,8 @@ import org.redisson.codec.BaseEventCodec
 import org.redisson.config.Config
 import org.redisson.misc.RedisURI
 import reactor.core.publisher.Mono
+import java.lang.reflect.InvocationTargetException
+import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -119,6 +121,30 @@ internal class SyncMapEventFixture : AutoCloseable {
         }
     }
 
+    val instanceId: String get() = api.clientId
+
+    fun issueOwnWrite(type: String, vararg values: String): Any =
+        trackOwnWriteMethod.call(
+            map,
+            type,
+            values,
+            map.mutateLocally {},
+            false,
+        )!!
+
+    fun replyOwnWrite(write: Any, version: Long) {
+        resolveTrackedWriteMethod.call(
+            map,
+            write,
+            version,
+            version,
+        )
+    }
+
+    /** Runs a raw stream message through the poll handler; `false` if the poll deferred it. */
+    fun streamEvent(type: String, version: Long, origin: String, payload: String): Boolean =
+        processStreamEventMethod.call(map, type, "$version\u0000$origin\u0000$payload") as Boolean
+
     override fun close() {
         map.dispose()
         for (name in listOf("redisListenerScope", "syncStructureScope")) {
@@ -141,6 +167,25 @@ internal class SyncMapEventFixture : AutoCloseable {
         private val snapshotMethod = SyncMapImpl::class.java.getDeclaredMethod(
             "overrideFromRemote", AbstractSyncStructure.SimpleVersionedSnapshot::class.java
         ).apply { isAccessible = true }
+
+        private val trackOwnWriteMethod =
+            AbstractStreamSyncStructure::class.java.declaredMethods
+                .single { it.name == "trackOwnWrite" }
+                .apply { isAccessible = true }
+
+        private val resolveTrackedWriteMethod =
+            AbstractStreamSyncStructure::class.java.declaredMethods
+                .single { it.name == "resolveTrackedWrite" }
+                .apply { isAccessible = true }
+        private val processStreamEventMethod = AbstractStreamSyncStructure::class.java.getDeclaredMethod(
+            "processStreamEvent", String::class.java, String::class.java
+        ).apply { isAccessible = true }
+        /** Invokes a reflected method and rethrows its original failure. */
+        private fun Method.call(target: Any, vararg args: Any?): Any? = try {
+            invoke(target, *args)
+        } catch (failure: InvocationTargetException) {
+            throw failure.cause ?: failure
+        }
 
         private val resyncInFlightField = AbstractStreamSyncStructure::class.java.getDeclaredField("resyncInFlight")
             .apply { isAccessible = true }

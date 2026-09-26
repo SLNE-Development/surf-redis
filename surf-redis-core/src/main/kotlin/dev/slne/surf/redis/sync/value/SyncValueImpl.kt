@@ -64,14 +64,16 @@ class SyncValueImpl<T : Any> internal constructor(
     override suspend fun getRemote(): T = decodeOrDefault(pullRemoteSnapshot().awaitSingle().value)
 
     override fun set(newValue: T) {
-        val old = value.getAndSet(newValue)
+        val old: T
+        val epoch = mutateLocally { old = value.getAndSet(newValue) }
 
         notifyListeners(SyncValueChange.Updated(newValue, old))
-        writeToRemote(SET_SCRIPT, EVENT_SET, encodeValue(newValue))
+        writeToRemote(epoch, SET_SCRIPT, EVENT_SET, encodeValue(newValue))
     }
 
     override suspend fun setAndAwait(newValue: T) {
-        val old = value.getAndSet(newValue)
+        val old: T
+        val epoch = mutateLocally { old = value.getAndSet(newValue) }
 
         notifyListeners(
             SyncValueChange.Updated(
@@ -81,6 +83,7 @@ class SyncValueImpl<T : Any> internal constructor(
         )
 
         writeToRemoteAwait(
+            epoch,
             SET_SCRIPT,
             EVENT_SET,
             encodeValue(newValue),
@@ -175,8 +178,11 @@ class SyncValueImpl<T : Any> internal constructor(
     }
 
     override fun overrideFromRemote(raw: SimpleVersionedSnapshot<String?>) {
-        value.set(decodeOrDefault(raw.value))
-        super.overrideFromRemote(raw)
+        val decoded = decodeOrDefault(raw.value)
+        lock.write {
+            value.set(decoded)
+            super.overrideFromRemote(raw)
+        }
     }
 
     private fun decodeValue(value: String): T = valueCodec.decode(value)
