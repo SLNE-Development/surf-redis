@@ -167,7 +167,7 @@ class RedisEventBusImpl(private val api: RedisApi) : RedisEventBus, RedisEventCo
 
         if (eventClass == null) {
             log.atFine()
-                .log("No registered event class for name: ${envelope.eventClass} - ignoring event.")
+                .log("No registered event class for name: %s - ignoring event.", envelope.eventClass)
             return
         }
 

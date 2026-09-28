@@ -134,7 +134,7 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
 
         if (registration == null) {
             log.atFine()
-                .log("No registered request class for name: ${envelope.requestClass} - ignoring request.")
+                .log("No registered request class for name: %s - ignoring request.", envelope.requestClass)
             return
         }
 
@@ -186,7 +186,7 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
         val deferred = pendingRequests[requestId]
         if (deferred == null) {
             log.atFine()
-                .log("No pending request found for response with ID: $requestId - ignoring response.")
+                .log("No pending request found for response with ID: %s - ignoring response.", requestId)
             return
         }
 
