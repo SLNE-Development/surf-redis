@@ -21,6 +21,7 @@ import org.redisson.api.RScript
 import org.redisson.api.RSetReactive
 import org.redisson.api.RStreamReactive
 import org.redisson.api.stream.StreamMessageId
+import org.redisson.client.codec.StringCodec
 import reactor.core.Disposable
 import reactor.core.publisher.Mono
 import java.util.concurrent.ConcurrentHashMap
@@ -113,10 +114,10 @@ class SimpleSetRedisCacheImpl<T : Any>(
 
     private val scriptExecutor = LuaScriptExecutor.getInstance(api, LuaScripts)
     private val stream: RStreamReactive<String, String> by lazy {
-        api.redissonReactive.getStream(streamKey, Utf8StringCodec)
+        api.redissonReactive.getStream(streamKey, StringCodec.INSTANCE)
     }
     private val idsSet: RSetReactive<String> by lazy {
-        api.redissonReactive.getSet(idsRedisKey, Utf8StringCodec)
+        api.redissonReactive.getSet(idsRedisKey, StringCodec.INSTANCE)
     }
 
     private val wakeupBus = SyncStreamWakeupBus.getInstance(api)
@@ -397,7 +398,7 @@ class SimpleSetRedisCacheImpl<T : Any>(
     private fun refreshIndexTtl(indexName: String, indexValue: String) {
         val key = indexRedisKey(indexName, indexValue)
         refreshTtl(refreshKeyIdx(indexName, indexValue)) {
-            api.redissonReactive.getSet<String>(key, Utf8StringCodec)
+            api.redissonReactive.getSet<String>(key, StringCodec.INSTANCE)
                 .expire(ttl.toJavaDuration())
                 .doOnError { e ->
                     log.atWarning().withCause(e).log("Failed to refresh TTL for $key")
@@ -500,7 +501,7 @@ class SimpleSetRedisCacheImpl<T : Any>(
         onValue: (id: String, value: T?) -> Unit,
     ) {
         val keys = Array(ids.size) { valueRedisKey(ids[it].trim()) }
-        val raws = api.redissonReactive.getBuckets(Utf8StringCodec).get<String>(*keys).awaitSingle()
+        val raws = api.redissonReactive.getBuckets(StringCodec.INSTANCE).get<String>(*keys).awaitSingle()
         val unrefreshedIds = ObjectArrayList<String>()
 
         for (i in ids.indices) {
@@ -518,7 +519,7 @@ class SimpleSetRedisCacheImpl<T : Any>(
 
         forEachIdChunked(unrefreshedIds) { normId ->
             permits.withPermit {
-                api.redisson.getBucket<String>(valueRedisKey(normId), Utf8StringCodec)
+                api.redisson.getBucket<String>(valueRedisKey(normId), StringCodec.INSTANCE)
                     .expireAsync(ttl.toJavaDuration())
                     .await()
             }
@@ -559,7 +560,7 @@ class SimpleSetRedisCacheImpl<T : Any>(
 
         // Verify each ID's object (self-heal stale entries)
         val redisIndexKey = indexRedisKey(index.name, queryValue)
-        val indexSet = api.redissonReactive.getSet<String>(redisIndexKey, Utf8StringCodec)
+        val indexSet = api.redissonReactive.getSet<String>(redisIndexKey, StringCodec.INSTANCE)
         val result = ConcurrentHashMap.newKeySet<T>(loadedIds.size)
         val filteredIds = ConcurrentHashMap.newKeySet<String>(loadedIds.size)
         val staleIds = ObjectArrayList<String>()

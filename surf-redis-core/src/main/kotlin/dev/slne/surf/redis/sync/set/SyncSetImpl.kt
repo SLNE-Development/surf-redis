@@ -7,9 +7,9 @@ import dev.slne.surf.redis.sync.AbstractSyncStructure
 import dev.slne.surf.redis.sync.AbstractSyncStructure.SimpleVersionedSnapshot
 import dev.slne.surf.redis.sync.SyncValueCodec
 import dev.slne.surf.redis.util.LuaScriptRegistry
-import dev.slne.surf.redis.util.Utf8StringCodec
 import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet
 import kotlinx.coroutines.reactor.awaitSingle
+import org.redisson.client.codec.StringCodec
 import reactor.core.publisher.Mono
 import kotlin.time.Duration
 
@@ -59,7 +59,7 @@ class SyncSetImpl<T : Any> internal constructor(
     private val remoteSet by lazy {
         api.redissonReactive.getSet<String>(
             dataKey,
-            Utf8StringCodec
+            StringCodec.INSTANCE
         )
     }
 

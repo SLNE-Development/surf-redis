@@ -16,7 +16,6 @@ import dev.slne.surf.redis.invoker.RedisInvokerLookupProvider
 import dev.slne.surf.redis.invoker.RedisRequestHandlerInvokerTemplate
 import dev.slne.surf.redis.util.JsonEnvelopeHead
 import dev.slne.surf.redis.util.KotlinSerializerCache
-import dev.slne.surf.redis.util.Utf8StringCodec
 import dev.slne.surf.redis.util.asDeferred
 import it.unimi.dsi.fastutil.objects.Object2ObjectMap
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap
@@ -25,6 +24,7 @@ import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.JsonElement
+import org.redisson.client.codec.StringCodec
 import reactor.core.publisher.Mono
 import java.lang.reflect.ParameterizedType
 import java.util.*
@@ -66,11 +66,11 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
     private val serializerCache = KotlinSerializerCache<Any>(api.json.serializersModule)
     private val envelopeSerializers = OutboundEnvelopeSerializers(serializerCache)
 
-    private val requestTopic by lazy { api.redissonReactive.getTopic(REQUEST_CHANNEL, Utf8StringCodec) }
+    private val requestTopic by lazy { api.redissonReactive.getTopic(REQUEST_CHANNEL, StringCodec.INSTANCE) }
     private val responseTopic by lazy {
         api.redissonReactive.getTopic(
             RESPONSE_CHANNEL,
-            Utf8StringCodec
+            StringCodec.INSTANCE
         )
     }
 

@@ -9,6 +9,7 @@ import org.redisson.api.RBucketReactive
 import org.redisson.api.RScript
 import org.redisson.api.RStreamReactive
 import org.redisson.api.stream.StreamMessageId
+import org.redisson.client.codec.StringCodec
 import reactor.core.Disposable
 import reactor.core.Disposables
 import reactor.core.publisher.Mono
@@ -58,7 +59,7 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
     private val versions = StreamVersionTracker()
 
     protected val stream: RStreamReactive<String, String> by lazy {
-        api.redissonReactive.getStream(streamKey, Utf8StringCodec)
+        api.redissonReactive.getStream(streamKey, StringCodec.INSTANCE)
     }
 
     private val cursorId = AtomicReference(StreamMessageId(0, 0))
@@ -83,7 +84,7 @@ abstract class AbstractStreamSyncStructure<L, R : AbstractSyncStructure.Versione
     private val codecKey: String = "${namespace}codec"
 
     private val codecBucket: RBucketReactive<String> by lazy {
-        api.redissonReactive.getBucket(codecKey, Utf8StringCodec)
+        api.redissonReactive.getBucket(codecKey, StringCodec.INSTANCE)
     }
 
     protected val scriptExecutor = LuaScriptExecutor.getInstance(api, scriptRegistry)

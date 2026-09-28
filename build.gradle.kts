@@ -40,15 +40,50 @@ val shadedPackages = mapOf(
 
 extra["shadedPackages"] = shadedPackages
 
+val redissonRelocationPath = shadedPackages.getValue("org.redisson").replace('.', '/')
+extra["redissonRelocationPath"] = redissonRelocationPath
+
+val patchedRedissonClasses = mapOf(
+    "org/redisson/client/codec/StringCodec" to
+        ("hasReplacedSurrogates" to "2dc56b80f24cdb08c5cc40d6989042892e82ddf45886559a393e38ddd5dbdbc1"),
+)
+extra["patchedRedissonClasses"] = patchedRedissonClasses
+
+fun ByteArray.containsAscii(text: String): Boolean = String(this, Charsets.ISO_8859_1).contains(text)
+
 subprojects {
     tasks.withType<ShadowJar>().configureEach {
         shadedPackages.forEach { (from, to) -> relocate(from, to) }
+
+        patchedRedissonClasses.forEach { (path, patch) ->
+            filesMatching(listOf("$path.class", "$path$*.class")) {
+                if (!open().use { it.readBytes() }.containsAscii(patch.first)) exclude()
+            }
+        }
     }
 
     tasks.withType<ShadowJar>().configureEach {
         doLast {
             val jar = archiveFile.get().asFile
             if (!jar.exists()) return@doLast
+
+            ZipFile(jar).use { zip ->
+                for ((path, patch) in patchedRedissonClasses) {
+                    val shadedPath = redissonRelocationPath + path.removePrefix("org/redisson")
+                    val entry = zip.getEntry("$shadedPath.class")
+                    if (entry == null) {
+                        val shadedPackage = shadedPath.substringBeforeLast('/') + "/"
+                        check(zip.stream().noneMatch { it.name.startsWith(shadedPackage) }) {
+                            "${jar.name} shades $shadedPackage but lacks the patched $shadedPath"
+                        }
+                        continue
+                    }
+                    val bytes = zip.getInputStream(entry).use { it.readBytes() }
+                    check(bytes.containsAscii(patch.first)) {
+                        "${jar.name} contains Redisson's original $shadedPath instead of the surf-redis-api patch"
+                    }
+                }
+            }
 
             val tmpJar = File(jar.parentFile, "${jar.name}.tmp")
 

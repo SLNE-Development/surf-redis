@@ -3,6 +3,9 @@
 import dev.slne.surf.api.gradle.util.slneReleases
 import org.jetbrains.dokka.gradle.tasks.DokkaGenerateTask
 import org.jetbrains.kotlin.gradle.dsl.abi.ExperimentalAbiValidation
+import java.security.MessageDigest
+import java.util.HexFormat
+import java.util.zip.ZipFile
 
 plugins {
     id("dev.slne.surf.api.gradle.core")
@@ -18,7 +21,17 @@ kotlin {
         filters {
             exclude {
                 annotatedWith.add("dev.slne.surf.redis.util.InternalRedisAPI")
+                byNames.add("org.redisson.**")
             }
+        }
+    }
+}
+
+dokka {
+    dokkaSourceSets.configureEach {
+        perPackageOption {
+            matchingRegex = """org\.redisson(\..*)?"""
+            suppress = true
         }
     }
 }
@@ -26,8 +39,12 @@ kotlin {
 @Suppress("UNCHECKED_CAST")
 val shadedPackages = rootProject.extra["shadedPackages"] as Map<String, String>
 
+@Suppress("UNCHECKED_CAST")
+val patchedRedissonClasses = rootProject.extra["patchedRedissonClasses"] as Map<String, Pair<String, String>>
+
 val redissonPackagePath = "org/redisson"
-val redissonRelocationPath = shadedPackages.getValue("org.redisson").replace('.', '/')
+val redissonRelocationPath = rootProject.extra["redissonRelocationPath"] as String
+val redissonPatchSources = fileTree("src/main/java") { include("$redissonPackagePath/**") }
 val relocationExtraDepth =
     redissonRelocationPath.count { it == '/' } - redissonPackagePath.count { it == '/' }
 
@@ -65,6 +82,7 @@ fun registerRedissonRelocation(
     outputDirectory: String,
     textFileSuffix: String,
     rewriteLinkDepth: Boolean,
+    patchedFiles: FileTree? = null,
 ) = tasks.register<Sync>(taskName) {
     description = "Rewrites Redisson's $textFileSuffix files onto the shaded package names."
     group = JavaBasePlugin.DOCUMENTATION_GROUP
@@ -76,7 +94,9 @@ fun registerRedissonRelocation(
     inputs.property("shadedPackageRewrites", shadedPackageRewrites.toString())
     inputs.property("rewriteLinkDepth", rewriteLinkDepth)
 
-    from(source.elements.map { jars -> jars.map(::zipTree) }) {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    from(source.elements.map { jars -> listOfNotNull(patchedFiles) + jars.map(::zipTree) }) {
         include("$redissonPackagePath/**")
 
         eachFile {
@@ -120,13 +140,42 @@ val relocateRedissonJavadoc = registerRedissonRelocation(
     rewriteLinkDepth = true,
 )
 
+val redissonSources = redissonArtifact("redissonSources", "sources")
+
 val relocateRedissonSources = registerRedissonRelocation(
     taskName = "relocateRedissonSources",
-    source = redissonArtifact("redissonSources", "sources"),
+    source = redissonSources,
     outputDirectory = "docs/redisson-sources",
     textFileSuffix = ".java",
     rewriteLinkDepth = false,
+    patchedFiles = redissonPatchSources,
 )
+
+val verifyRedissonPatches = tasks.register("verifyRedissonPatches") {
+    description = "Fails when Redisson's upstream source of a patched class no longer matches its recorded hash."
+    group = LifecycleBasePlugin.VERIFICATION_GROUP
+
+    val sourceJars: FileCollection = redissonSources
+    val expectedHashes = patchedRedissonClasses.entries.associate { (path, patch) -> "$path.java" to patch.second }
+
+    doLast {
+        ZipFile(sourceJars.singleFile).use { zip ->
+            for ((path, expected) in expectedHashes) {
+                val entry = checkNotNull(zip.getEntry(path)) { "Redisson no longer ships $path" }
+                val bytes = zip.getInputStream(entry).use { it.readBytes() }
+                val actual = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes))
+                check(actual == expected) {
+                    "Redisson's $path changed (SHA-256 $actual). Re-apply the surf-redis patch in " +
+                        "src/main/java/$path onto the new upstream source, then update its hash in the root build.gradle.kts."
+                }
+            }
+        }
+    }
+}
+
+tasks.check {
+    dependsOn(verifyRedissonPatches)
+}
 
 tasks.javadoc {
     setSource(files())
@@ -142,6 +191,8 @@ tasks.named<Jar>("javadocJar") {
 
 tasks.named<Jar>("sourcesJar") {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    exclude("$redissonPackagePath/**")
 
     from(relocateRedissonSources)
 }

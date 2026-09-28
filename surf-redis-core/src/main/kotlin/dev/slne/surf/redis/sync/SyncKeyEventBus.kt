@@ -3,7 +3,7 @@ package dev.slne.surf.redis.sync
 import com.github.benmanes.caffeine.cache.Caffeine
 import dev.slne.surf.api.core.util.logger
 import dev.slne.surf.redis.RedisApi
-import dev.slne.surf.redis.util.Utf8StringCodec
+import org.redisson.client.codec.StringCodec
 import reactor.core.publisher.Mono
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -52,7 +52,7 @@ internal class SyncKeyEventBus(
          */
         fun getInstance(api: RedisApi): SyncKeyEventBus = byApi.get(api) { redisApi ->
             SyncKeyEventBus { pattern, onKey ->
-                redisApi.redissonReactive.getPatternTopic(pattern, Utf8StringCodec)
+                redisApi.redissonReactive.getPatternTopic(pattern, StringCodec.INSTANCE)
                     .addListener(String::class.java) { _, _, key -> onKey(key) }
             }
         }

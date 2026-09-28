@@ -7,10 +7,10 @@ import dev.slne.surf.redis.sync.AbstractSyncStructure
 import dev.slne.surf.redis.sync.AbstractSyncStructure.SimpleVersionedSnapshot
 import dev.slne.surf.redis.sync.SyncValueCodec
 import dev.slne.surf.redis.util.LuaScriptRegistry
-import dev.slne.surf.redis.util.Utf8StringCodec
 import it.unimi.dsi.fastutil.objects.ObjectArrayList
 import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
+import org.redisson.client.codec.StringCodec
 import reactor.core.publisher.Mono
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.time.Duration
@@ -74,7 +74,7 @@ class SyncListImpl<T : Any> internal constructor(
     private val remoteList by lazy {
         api.redissonReactive.getList<String>(
             dataKey,
-            Utf8StringCodec
+            StringCodec.INSTANCE
         )
     }
 

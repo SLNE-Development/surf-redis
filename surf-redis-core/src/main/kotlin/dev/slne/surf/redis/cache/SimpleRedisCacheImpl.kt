@@ -13,6 +13,7 @@ import kotlinx.serialization.KSerializer
 import org.redisson.api.RScript
 import org.redisson.api.RStreamReactive
 import org.redisson.api.stream.StreamMessageId
+import org.redisson.client.codec.StringCodec
 import reactor.core.Disposable
 import reactor.core.publisher.Mono
 import java.util.concurrent.atomic.AtomicLong
@@ -85,7 +86,7 @@ class SimpleRedisCacheImpl<K : Any, V : Any>(
 
     private val scriptExecutor = LuaScriptExecutor.getInstance(api, LuaScripts)
     private val stream: RStreamReactive<String, String> by lazy {
-        api.redissonReactive.getStream(streamKey, Utf8StringCodec)
+        api.redissonReactive.getStream(streamKey, StringCodec.INSTANCE)
     }
 
     private val wakeupBus = SyncStreamWakeupBus.getInstance(api)
