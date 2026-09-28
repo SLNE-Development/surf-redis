@@ -10,6 +10,7 @@ import dev.slne.surf.redis.sync.SyncStreamWakeupBus
 import dev.slne.surf.redis.util.*
 import it.unimi.dsi.fastutil.objects.ObjectArrayList
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.future.await
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
@@ -17,6 +18,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.KSerializer
 import org.redisson.api.RScript
+import org.redisson.api.RSetReactive
 import org.redisson.api.RStreamReactive
 import org.redisson.api.stream.StreamMessageId
 import reactor.core.Disposable
@@ -112,6 +114,9 @@ class SimpleSetRedisCacheImpl<T : Any>(
     private val scriptExecutor = LuaScriptExecutor.getInstance(api, LuaScripts)
     private val stream: RStreamReactive<String, String> by lazy {
         api.redissonReactive.getStream(streamKey, Utf8StringCodec)
+    }
+    private val idsSet: RSetReactive<String> by lazy {
+        api.redissonReactive.getSet(idsRedisKey, Utf8StringCodec)
     }
 
     private val wakeupBus = SyncStreamWakeupBus.getInstance(api)
@@ -381,8 +386,7 @@ class SimpleSetRedisCacheImpl<T : Any>(
 
     private fun refreshIdsTtl() {
         refreshTtl(refreshKeyIds()) {
-            api.redissonReactive.getSet<String>(idsRedisKey, Utf8StringCodec)
-                .expire(ttl.toJavaDuration())
+            idsSet.expire(ttl.toJavaDuration())
                 .doOnError { e ->
                     log.atWarning().withCause(e).log("Failed to refresh TTL for $idsRedisKey")
                 }
@@ -514,9 +518,9 @@ class SimpleSetRedisCacheImpl<T : Any>(
 
         forEachIdChunked(unrefreshedIds) { normId ->
             permits.withPermit {
-                api.redissonReactive.getBucket<String>(valueRedisKey(normId), Utf8StringCodec)
-                    .expire(ttl.toJavaDuration())
-                    .awaitSingleOrNull()
+                api.redisson.getBucket<String>(valueRedisKey(normId), Utf8StringCodec)
+                    .expireAsync(ttl.toJavaDuration())
+                    .await()
             }
         }
     }
@@ -656,7 +660,6 @@ class SimpleSetRedisCacheImpl<T : Any>(
         val ids = getAllIdsCached()
         if (ids.isEmpty()) return emptySet()
 
-        val idsRedis = api.redissonReactive.getSet<String>(idsRedisKey, Utf8StringCodec)
         val result = ConcurrentHashMap.newKeySet<T>()
         val staleIds = ObjectArrayList<String>()
         val semaphore = Semaphore(MAX_CONCURRENT_REDIS_OPS)
@@ -670,7 +673,7 @@ class SimpleSetRedisCacheImpl<T : Any>(
         }
 
         forEachIdChunked(staleIds) { id ->
-            semaphore.withPermit { idsRedis.remove(id).awaitSingleOrNull() }
+            semaphore.withPermit { idsSet.remove(id).awaitSingleOrNull() }
             nearIds.invalidate(LOCAL_IDS_CACHE_KEY)
         }
 

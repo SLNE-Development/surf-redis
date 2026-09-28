@@ -11,6 +11,7 @@ import kotlinx.serialization.json.Json
 import org.redisson.api.*
 import org.redisson.codec.BaseEventCodec
 import org.redisson.config.Config
+import org.redisson.misc.CompletableFutureWrapper
 import org.redisson.misc.RedisURI
 import reactor.core.publisher.Mono
 import java.lang.reflect.Proxy
@@ -83,15 +84,15 @@ internal class SetCacheFixture(nearValueCacheSize: Long = 10_000) : AutoCloseabl
         when (name) {
             "getScript" -> script
             "getBuckets" -> buckets
-            "getBucket" -> bucketProxy(args!![0] as String)
             "getSet" -> setProxy(args!![0] as String)
             else -> error("Unexpected reactive operation $name")
         }
     }
 
-    private val client = proxy<RedissonClient> { name, _ ->
+    private val client = proxy<RedissonClient> { name, args ->
         when (name) {
             "reactive" -> reactive
+            "getBucket" -> bucketProxy(args!![0] as String)
             "shutdown" -> null
             else -> error("Unexpected client operation $name")
         }
@@ -133,10 +134,9 @@ internal class SetCacheFixture(nearValueCacheSize: Long = 10_000) : AutoCloseabl
         return listOf(1L) + touched
     }
 
-    private fun bucketProxy(key: String) = proxy<RBucketReactive<String>> { name, _ ->
+    private fun bucketProxy(key: String) = proxy<RBucket<String>> { name, _ ->
         when (name) {
-            "get" -> command("bucket.get") { values[key] }
-            "expire" -> command("bucket.expire") { values.containsKey(key) }
+            "expireAsync" -> CompletableFutureWrapper(command("bucket.expire") { values.containsKey(key) }.toFuture())
             else -> error("Unexpected bucket operation $name")
         }
     }
