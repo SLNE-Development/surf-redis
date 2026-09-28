@@ -812,17 +812,28 @@ class SimpleSetRedisCacheImpl<T : Any>(
         }
 
         @Suppress("UNCHECKED_CAST")
-        val removedCount = scriptExecutor.executeWithValues<Long>(
+        val result = scriptExecutor.executeWithValues<List<Any>>(
             REMOVE_INDEX_SCRIPT,
             RScript.Mode.READ_WRITE,
-            RScript.ReturnType.LONG,
+            RScript.ReturnType.LIST,
             scriptKeys,
             values = argv as Array<Any>
         ).awaitSingle()
 
-        if (removedCount <= 0L) return false
+        val removedCount = (result[0] as Number).toInt()
+        if (removedCount <= 0) return false
 
-        clearNearCacheOnly()
+        for (i in 1..removedCount) {
+            val removedId = result[i].toString()
+            nearValues.invalidate(removedId)
+            refreshGate.invalidate(refreshKeyVal(removedId))
+        }
+        nearIds.invalidate(LOCAL_IDS_CACHE_KEY)
+        nearIndexIds.invalidate(indexCacheKey(index.name, queryValue))
+        for (i in removedCount + 1 until result.size) {
+            nearIndexIds.invalidate(result[i].toString())
+        }
+
         return true
     }
 

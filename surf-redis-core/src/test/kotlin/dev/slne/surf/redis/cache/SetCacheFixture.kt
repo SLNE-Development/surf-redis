@@ -24,7 +24,8 @@ import kotlin.time.Duration.Companion.minutes
  * Runs [SimpleSetRedisCacheImpl] against an in-memory Redis that counts every command.
  *
  * Elements are strings of the form `"<id>:<color>"`, indexed by [Indexes.color]. Only the commands the
- * read paths and [SimpleSetRedisCacheImpl.removeById] issue are modelled; `init()` is never called.
+ * read paths, [SimpleSetRedisCacheImpl.removeById] and [SimpleSetRedisCacheImpl.removeByIndex] issue are
+ * modelled; `init()` is never called.
  */
 internal class SetCacheFixture(nearValueCacheSize: Long = 10_000) : AutoCloseable {
     object Indexes : RedisSetIndexes<String>() {
@@ -60,6 +61,7 @@ internal class SetCacheFixture(nearValueCacheSize: Long = 10_000) : AutoCloseabl
                     "get_and_touch" -> values[valueKey(argv[2] as String)]
                     "read_all_and_touch" -> set((args[3] as List<*>).single() as String).toList()
                     "remove_by_id" -> removeById(argv[7] as String)
+                    "remove_by_index" -> removeByIndex(argv[7] as String, argv[8] as String)
                     else -> error("Unexpected script ${args[1]}")
                 }
             }
@@ -134,6 +136,19 @@ internal class SetCacheFixture(nearValueCacheSize: Long = 10_000) : AutoCloseabl
         return listOf(1L) + touched
     }
 
+    private fun removeByIndex(indexName: String, indexValue: String): List<Any> {
+        val ids = sets.remove("$PREFIX:__idx__:$indexName:$indexValue")?.toList().orEmpty()
+        val touched = LinkedHashSet<String>()
+        for (id in ids) {
+            values.remove(valueKey(id))
+            set(IDS_KEY).remove(id)
+            touched += "$indexName\u0000$indexValue"
+            sets.filter { (key, members) -> key.startsWith(INDEX_PREFIX) && members.remove(id) }
+                .keys.mapTo(touched) { it.removePrefix("$PREFIX:__idx__:").replaceFirst(':', '\u0000') }
+        }
+        return listOf<Any>(ids.size.toLong()) + ids + touched
+    }
+
     private fun bucketProxy(key: String) = proxy<RBucket<String>> { name, _ ->
         when (name) {
             "expireAsync" -> CompletableFutureWrapper(command("bucket.expire") { values.containsKey(key) }.toFuture())
@@ -178,7 +193,7 @@ internal class SetCacheFixture(nearValueCacheSize: Long = 10_000) : AutoCloseabl
         fun indexKey(color: String) = "$INDEX_PREFIX$color"
 
         private val SCRIPTS = listOf(
-            "touch_value", "get_and_touch", "read_all_and_touch", "remove_by_id"
+            "touch_value", "get_and_touch", "read_all_and_touch", "remove_by_id", "remove_by_index"
         ).associateWith { name ->
             SetCacheFixture::class.java.getResource("/lua/cache/simple-indexed/$name.lua")!!.readText()
         }
