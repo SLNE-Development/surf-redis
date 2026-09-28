@@ -10,8 +10,9 @@ import io.netty.buffer.Unpooled
 import it.unimi.dsi.fastutil.objects.Object2ObjectMap
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap
 import it.unimi.dsi.fastutil.objects.ObjectArrayList
+import java.lang.reflect.Field
+import java.lang.reflect.Modifier
 import java.nio.charset.StandardCharsets
-import kotlin.reflect.full.companionObject
 
 internal class EventCodecRegistry {
     typealias ByClass = Object2ObjectMap<Class<out RedisEvent>, EventCodecRegistration>
@@ -193,18 +194,18 @@ internal class EventCodecRegistry {
     }
 
     private fun discoverCompanionCodec(type: Class<*>): RedisEventCodec<out RedisEvent>? {
-        val companionClass = type.kotlin.companionObject ?: return null
+        val companionField = companionField(type) ?: return null
 
         val companion = try {
-            companionClass.objectInstance
+            companionField.get(null)
         } catch (exception: Exception) {
             throw IllegalStateException(
-                "Could not access companion object '${companionClass.qualifiedName}' " +
+                "Could not access companion object '${companionField.type.name}' " +
                         "of class '${type.name}'",
                 exception
             )
         } ?: throw IllegalStateException(
-            "Companion object '${companionClass.qualifiedName}' of class '${type.name}' " +
+            "Companion object '${companionField.type.name}' of class '${type.name}' " +
                     "has no accessible instance"
         )
 
@@ -227,6 +228,31 @@ internal class EventCodecRegistry {
             "Companion object for event '${type.name}' provides multiple RedisEventCodec instances"
         }
         return distinct.firstOrNull()
+    }
+
+    private fun companionField(type: Class<*>): Field? {
+        if (!type.isAnnotationPresent(Metadata::class.java)) {
+            return null
+        }
+
+        return type.declaredFields.find { field ->
+            val companionClass = field.type
+
+            if (!Modifier.isStatic(field.modifiers) ||
+                !Modifier.isFinal(field.modifiers) ||
+                companionClass.declaringClass != type ||
+                companionClass.simpleName != field.name
+            ) {
+                return@find false
+            }
+
+            val constructors = companionClass.declaredConstructors
+            constructors.all {
+                Modifier.isPrivate(it.modifiers) || it.isSynthetic
+            } && constructors.any {
+                it.isSynthetic
+            }
+        }
     }
 
     private fun eventIdCollision(
