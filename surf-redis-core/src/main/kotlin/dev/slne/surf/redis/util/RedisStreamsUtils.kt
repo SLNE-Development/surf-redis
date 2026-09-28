@@ -39,6 +39,31 @@ fun <K : Any, V : Any> RStreamReactive<K, V>.pollContinuously(
         scheduler,
     ).map {}
 
+    /**
+     * Read a batch of messages from the stream.
+     *
+     * @return A Mono that emits true if there are more messages to read, false otherwise.
+     */
+    fun readBatch(): Mono<Boolean> = Mono.defer {
+        val startId = cursorId.get()
+        val args = StreamReadArgs.greaterThan(startId)
+            .count(count)
+
+        read(args)
+            .publishOn(scheduler)
+            .map { batch ->
+                if (batch.isNotEmpty()) {
+                    handler(Result.success(batch))
+                }
+
+                batch.size >= count && cursorId.get() != startId
+            }
+            .onErrorResume { throwable ->
+                handler(Result.failure(throwable))
+                Mono.empty()
+            }
+    }
+
     return Flux.merge(wakeups, fallback)
         .startWith(Unit)
         .onBackpressureLatest()
@@ -47,23 +72,11 @@ fun <K : Any, V : Any> RStreamReactive<K, V>.pollContinuously(
                 if (!shouldPoll()) {
                     Mono.empty()
                 } else {
-                    Mono.defer {
-                        val args = StreamReadArgs.greaterThan(cursorId.get())
-                            .count(count)
-
-                        read(args)
-                            .publishOn(scheduler)
-                            .doOnNext { batch ->
-                                if (batch.isNotEmpty()) {
-                                    handler(Result.success(batch))
-                                }
-                            }
-                            .onErrorResume { throwable ->
-                                handler(Result.failure(throwable))
-                                Mono.empty()
-                            }
-                            .then()
-                    }
+                    readBatch()
+                        .expand { mayHaveMore ->
+                            if (mayHaveMore && shouldPoll()) readBatch() else Mono.empty()
+                        }
+                        .then()
                 }
             },
             1,
