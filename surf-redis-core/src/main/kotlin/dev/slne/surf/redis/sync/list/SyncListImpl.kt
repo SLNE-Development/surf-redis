@@ -10,6 +10,7 @@ import dev.slne.surf.redis.util.LuaScriptRegistry
 import it.unimi.dsi.fastutil.objects.ObjectArrayList
 import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
+import org.redisson.api.RScript
 import org.redisson.client.codec.StringCodec
 import reactor.core.publisher.Mono
 import java.util.concurrent.atomic.AtomicLong
@@ -49,6 +50,7 @@ class SyncListImpl<T : Any> internal constructor(
         private const val APPEND_REMOTE_SCRIPT = "append-remote"
         private const val SET_AT_REMOTE_SCRIPT = "set-at-remote"
         private const val REMOVE_AT_REMOTE_SCRIPT = "remove-at-remote"
+        private const val CONTAINS_SCRIPT = "contains"
 
         private object Scripts : LuaScriptRegistry("lua/sync/list") {
             init {
@@ -62,6 +64,7 @@ class SyncListImpl<T : Any> internal constructor(
                 load(APPEND_REMOTE_SCRIPT)
                 load(SET_AT_REMOTE_SCRIPT)
                 load(REMOVE_AT_REMOTE_SCRIPT)
+                load(CONTAINS_SCRIPT)
             }
         }
     }
@@ -77,6 +80,8 @@ class SyncListImpl<T : Any> internal constructor(
             StringCodec.INSTANCE
         )
     }
+
+    private val dataKeyList: List<Any> = listOf(dataKey)
 
     override fun snapshot() = lock.read { ObjectArrayList(list) }
     override fun size(): Int = lock.optimisticRead { list.size }
@@ -377,7 +382,13 @@ class SyncListImpl<T : Any> internal constructor(
     }
 
     override suspend fun containsRemote(element: T): Boolean {
-        return remoteList.contains(encodeValue(element)).awaitSingle()
+        return scriptExecutor.execute<Boolean>(
+            CONTAINS_SCRIPT,
+            RScript.Mode.READ_ONLY,
+            RScript.ReturnType.BOOLEAN,
+            dataKeyList,
+            encodeValue(element),
+        ).awaitSingle()
     }
 
     override suspend fun sizeRemote(): Int {
