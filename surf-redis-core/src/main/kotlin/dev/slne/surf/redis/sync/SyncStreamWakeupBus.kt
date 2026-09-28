@@ -3,14 +3,16 @@ package dev.slne.surf.redis.sync
 import com.github.benmanes.caffeine.cache.Caffeine
 import dev.slne.surf.redis.RedisApi
 import org.redisson.client.codec.StringCodec
+import reactor.core.Disposable
 import reactor.core.publisher.Mono
 import reactor.core.publisher.Sinks
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicReference
 
 internal class SyncStreamWakeupBus private constructor(
     private val api: RedisApi,
-) {
+) : Disposable {
     companion object {
         /**
          * Channel the sync and cache mutation scripts publish `streamKey\u0000originId` to after each XADD
@@ -24,7 +26,7 @@ internal class SyncStreamWakeupBus private constructor(
             .build<RedisApi, SyncStreamWakeupBus>()
 
         fun getInstance(api: RedisApi): SyncStreamWakeupBus =
-            byApi.get(api) { SyncStreamWakeupBus(it) }
+            byApi.get(api) { SyncStreamWakeupBus(it).also(it::registerDisposable) }
     }
 
     private val topic by lazy {
@@ -33,15 +35,23 @@ internal class SyncStreamWakeupBus private constructor(
 
     private val subscribers = ConcurrentHashMap<String, CopyOnWriteArrayList<Sinks.Many<Unit>>>()
 
+    private val listenerId = AtomicReference<Int?>()
+
     private val initialization: Mono<Void> by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         topic.addListener(String::class.java) { _, message ->
             handleWakeup(message)
         }
+            .doOnNext(listenerId::set)
             .then()
             .cache()
     }
 
     fun init(): Mono<Void> = initialization
+
+    override fun dispose() {
+        val id = listenerId.getAndSet(null) ?: return
+        topic.removeListener(id).block()
+    }
 
     fun register(streamKey: String): Sinks.Many<Unit> {
         val sink = Sinks.many()
