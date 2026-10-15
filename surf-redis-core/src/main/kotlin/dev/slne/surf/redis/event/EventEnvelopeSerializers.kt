@@ -2,22 +2,21 @@ package dev.slne.surf.redis.event
 
 import dev.slne.surf.redis.util.KotlinSerializerCache
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.descriptors.buildClassSerialDescriptor
 import kotlinx.serialization.descriptors.element
+import kotlinx.serialization.encoding.CompositeDecoder
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.encoding.decodeStructure
 import kotlinx.serialization.encoding.encodeStructure
 import kotlinx.serialization.modules.SerializersModule
 
 /**
- * Provides cached serializers for encoding Redis events directly into their JSON envelope.
+ * Provides cached serializers that encode and decode Redis events directly as their JSON envelope.
  *
- * Each serializer is created once per event class and writes the envelope and event payload in a
- * single serialization pass, avoiding the intermediate [kotlinx.serialization.json.JsonElement]
- * tree that would otherwise be created for the event payload.
- *
- * The serializers are encode-only because incoming envelopes are decoded separately by the event
- * bus.
+ * Each serializer is created once per event class and handles the envelope and event payload in a
+ * single pass, without an intermediate [kotlinx.serialization.json.JsonElement] tree.
  */
 class EventEnvelopeSerializers(
     private val eventSerializers: KotlinSerializerCache<RedisEvent>
@@ -42,12 +41,13 @@ class EventEnvelopeSerializers(
 }
 
 /**
- * Encodes a single event type as an event envelope without materializing its payload first.
+ * Encodes and decodes a single event type as an event envelope without materializing its payload.
  *
  * The descriptor intentionally models the envelope as a class so configured serialization
  * behavior such as JSON naming strategies is applied to its fields normally.
  *
- * Deserialization is not supported.
+ * Decoding accepts the envelope fields in any order and throws [SerializationException] if the
+ * envelope names a different event class or lacks a field.
  */
 private class EventEnvelopeSerializer(
     private val eventClass: String,
@@ -65,8 +65,28 @@ private class EventEnvelopeSerializer(
         }
     }
 
-    override fun deserialize(decoder: Decoder): RedisEvent =
-        throw UnsupportedOperationException(
-            "EventEnvelopeSerializer is encode-only; inbound envelopes are decoded by the event bus"
-        )
+    override fun deserialize(decoder: Decoder): RedisEvent = decoder.decodeStructure(descriptor) {
+        var hasClass = false
+        var event: RedisEvent? = null
+        while (true) {
+            when (val index = decodeElementIndex(descriptor)) {
+                0 -> {
+                    val name = decodeStringElement(descriptor, 0)
+                    if (name != eventClass) {
+                        throw SerializationException("Expected event class '$eventClass' but was '$name'")
+                    }
+                    hasClass = true
+                }
+
+                1 -> event = decodeSerializableElement(descriptor, 1, eventSerializer)
+                CompositeDecoder.DECODE_DONE -> break
+                else -> throw SerializationException("Unexpected event envelope index: $index")
+            }
+        }
+
+        if (!hasClass || event == null) {
+            throw SerializationException("Event envelope for '$eventClass' is missing its class or data")
+        }
+        event
+    }
 }

@@ -146,11 +146,21 @@ class RedisEventBusImpl(private val api: RedisApi) : RedisEventBus, RedisEventCo
      *
      * The message is deserialized, validated, and dispatched to all
      * registered handlers for the corresponding event type.
+     *
+     * Messages whose event class is readable by [JsonEnvelopeHead] are decoded in one pass; any
+     * other message is decoded through a [JsonElement] envelope.
      */
     private fun handleIncomingMessage(message: String) {
         val head = JsonEnvelopeHead.leadingString(message, EVENT_HEAD_PREFIX)
-        if (head != null && !typeSnapshot.containsKey(head)) {
-            log.atFine().log("No registered event class for name: %s - ignoring event.", head)
+        if (head != null) {
+            val eventClass = typeSnapshot[head]
+            if (eventClass == null) {
+                log.atFine().log("No registered event class for name: %s - ignoring event.", head)
+                return
+            }
+
+            val event = decodeEnvelope(eventClass, message) ?: return
+            dispatchEvent(eventClass, event)
             return
         }
 
@@ -376,6 +386,30 @@ class RedisEventBusImpl(private val api: RedisApi) : RedisEventBus, RedisEventCo
     }
 
     /**
+     * Deserializes an event of the given type from its complete JSON envelope.
+     *
+     * @return the deserialized event, or `null` if no serializer is available or deserialization fails
+     */
+    private fun decodeEnvelope(eventClass: Class<out RedisEvent>, message: String): RedisEvent? {
+        val serializer = envelopeSerializers.get(eventClass)
+
+        if (serializer == null) {
+            log.atWarning()
+                .log("No serializer found for event class ${eventClass.simpleName} — cannot deserialize.")
+            return null
+        }
+
+        try {
+            return api.json.decodeFromString(serializer, message)
+        } catch (e: SerializationException) {
+            log.atWarning()
+                .withCause(e)
+                .log("Unable to deserialize event ${eventClass.simpleName}: ${e.message}")
+            return null
+        }
+    }
+
+    /**
      * Deserializes an event of the given type from JSON.
      *
      * @return the deserialized event, or `null` if deserialization fails
@@ -404,6 +438,9 @@ class RedisEventBusImpl(private val api: RedisApi) : RedisEventBus, RedisEventCo
 
     /**
      * Wire format for Redis event messages.
+     *
+     * Events are encoded, and inbound events with a readable head decoded, by
+     * [EventEnvelopeSerializers]. This class decodes the remaining inbound events.
      */
     @Serializable
     private data class EventEnvelope(

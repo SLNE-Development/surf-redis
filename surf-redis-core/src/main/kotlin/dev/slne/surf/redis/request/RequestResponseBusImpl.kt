@@ -64,7 +64,7 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
     private val registrationLock = ReentrantReadWriteLock()
 
     private val serializerCache = KotlinSerializerCache<Any>(api.json.serializersModule)
-    private val envelopeSerializers = OutboundEnvelopeSerializers(serializerCache)
+    private val envelopeSerializers = RequestEnvelopeSerializers(serializerCache)
 
     private val requestTopic by lazy { api.redissonReactive.getTopic(REQUEST_CHANNEL, StringCodec.INSTANCE) }
     private val responseTopic by lazy {
@@ -86,6 +86,7 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
         private const val RESPONSE_CHANNEL = "surf-redis:responses"
         internal val REQUEST_ID_PREFIX = JsonEnvelopeHead.prefix("request_id")
         internal const val REQUEST_CLASS_SEPARATOR = "\",\"request_class\":\""
+        internal const val RESPONSE_CLASS_SEPARATOR = "\",\"response_class\":\""
 
         private val INVOKER_FACTORY = InvokerFactory(
             /* templateClass = */ RedisRequestHandlerInvokerTemplate::class.java,
@@ -113,11 +114,21 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
      * The request envelope is decoded, the request is deserialized, and the registered handler for the
      * request type is invoked. The provided [RequestContext] exposes a response callback which publishes
      * a response back to Redis.
+     *
+     * Messages whose request class is readable by [JsonEnvelopeHead] are decoded in one pass; any
+     * other message is decoded through a [JsonElement] envelope.
      */
     private fun handleIncomingRequest(message: String) {
         val head = JsonEnvelopeHead.secondString(message, REQUEST_ID_PREFIX, REQUEST_CLASS_SEPARATOR)
-        if (head != null && !handlerSnapshot.containsKey(head)) {
-            log.atFine().log("No registered request class for name: %s - ignoring request.", head)
+        if (head != null) {
+            val registration = handlerSnapshot[head]
+            if (registration == null) {
+                log.atFine().log("No registered request class for name: %s - ignoring request.", head)
+                return
+            }
+
+            val envelope = decodeRequestEnvelope(registration.requestType, message) ?: return
+            dispatchRequest(registration, envelope.requestId, envelope.payload as RedisRequest)
             return
         }
 
@@ -139,7 +150,10 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
         }
 
         val request = deserializeRequest(registration.requestType, envelope.requestData) ?: return
-        val requestId = envelope.requestId
+        dispatchRequest(registration, envelope.requestId, request)
+    }
+
+    private fun dispatchRequest(registration: RequestRegistration, requestId: UUID, request: RedisRequest) {
         val context = RequestContext(
             request = request,
             respondCallback = { response ->
@@ -165,11 +179,31 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
      *
      * The response envelope is decoded and the corresponding pending request is completed.
      * Responses without a matching pending request are ignored.
+     *
+     * Messages whose response class is readable by [JsonEnvelopeHead] are decoded in one pass; any
+     * other message is decoded through a [JsonElement] envelope.
      */
     private fun handleIncomingResponse(message: String) {
         val headId = JsonEnvelopeHead.leadingUuid(message, REQUEST_ID_PREFIX)
         if (headId != null && !pendingRequests.containsKey(headId)) {
             log.atFine().log("No pending request found for response with ID: %s - ignoring response.", headId)
+            return
+        }
+
+        val headClass = if (headId != null) {
+            JsonEnvelopeHead.secondString(message, REQUEST_ID_PREFIX, RESPONSE_CLASS_SEPARATOR)
+        } else {
+            null
+        }
+        if (headClass != null) {
+            val responseClass = responseTypeRegistry[headClass]
+            if (responseClass == null) {
+                log.atFine().log("No registered response class for name: %s - ignoring response.", headClass)
+                return
+            }
+
+            val envelope = decodeResponseEnvelope(responseClass, message) ?: return
+            completeResponse(envelope.requestId, envelope.payload as RedisResponse)
             return
         }
 
@@ -182,11 +216,9 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
             return
         }
 
-        val requestId = envelope.requestId
-        val deferred = pendingRequests[requestId]
-        if (deferred == null) {
+        if (!pendingRequests.containsKey(envelope.requestId)) {
             log.atFine()
-                .log("No pending request found for response with ID: %s - ignoring response.", requestId)
+                .log("No pending request found for response with ID: %s - ignoring response.", envelope.requestId)
             return
         }
 
@@ -199,6 +231,16 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
         }
 
         val response = deserializeResponse(responseClass, envelope.responseData) ?: return
+        completeResponse(envelope.requestId, response)
+    }
+
+    private fun completeResponse(requestId: UUID, response: RedisResponse) {
+        val deferred = pendingRequests[requestId]
+        if (deferred == null) {
+            log.atFine()
+                .log("No pending request found for response with ID: %s - ignoring response.", requestId)
+            return
+        }
         if (!pendingRequests.remove(requestId, deferred)) return
 
         deferred.complete(response)
@@ -341,11 +383,45 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
         }
 
         try {
-            return api.json.encodeToString(serializer, OutboundEnvelope(requestId, request))
+            return api.json.encodeToString(serializer, RequestEnvelopeContent(requestId, request))
         } catch (e: SerializationException) {
             log.atWarning()
                 .withCause(e)
                 .log("Unable to serialize request: ${e.message}")
+            return null
+        }
+    }
+
+    /**
+     * Deserializes a request of the given type from its complete JSON envelope.
+     *
+     * @return the decoded envelope, or `null` if no serializer is available or deserialization fails
+     */
+    private fun decodeRequestEnvelope(
+        requestClass: Class<out RedisRequest>,
+        message: String
+    ): RequestEnvelopeContent? {
+        val serializer = envelopeSerializers.request(requestClass)
+
+        if (serializer == null) {
+            log.atWarning()
+                .log("No serializer found for request class: ${requestClass.name}")
+            return null
+        }
+
+        try {
+            val envelope = api.json.decodeFromString(serializer, message)
+            if (envelope.payload !is RedisRequest) {
+                log.atWarning()
+                    .log("Deserialized object is not a RedisRequest: ${envelope.payload::class.simpleName}")
+                return null
+            }
+
+            return envelope
+        } catch (e: SerializationException) {
+            log.atWarning()
+                .withCause(e)
+                .log("Unable to deserialize request: ${e.message}")
             return null
         }
     }
@@ -399,11 +475,45 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
         }
 
         try {
-            return api.json.encodeToString(serializer, OutboundEnvelope(requestId, response))
+            return api.json.encodeToString(serializer, RequestEnvelopeContent(requestId, response))
         } catch (e: SerializationException) {
             log.atWarning()
                 .withCause(e)
                 .log("Unable to serialize response: ${e.message}")
+            return null
+        }
+    }
+
+    /**
+     * Deserializes a response of the given type from its complete JSON envelope.
+     *
+     * @return the decoded envelope, or `null` if no serializer is available or deserialization fails
+     */
+    private fun decodeResponseEnvelope(
+        responseClass: Class<out RedisResponse>,
+        message: String
+    ): RequestEnvelopeContent? {
+        val serializer = envelopeSerializers.response(responseClass)
+
+        if (serializer == null) {
+            log.atWarning()
+                .log("No serializer found for response class: ${responseClass.name} - ignoring response.")
+            return null
+        }
+
+        try {
+            val envelope = api.json.decodeFromString(serializer, message)
+            if (envelope.payload !is RedisResponse) {
+                log.atWarning()
+                    .log("Deserialized object is not a RedisResponse: ${envelope.payload::class.simpleName}")
+                return null
+            }
+
+            return envelope
+        } catch (e: SerializationException) {
+            log.atWarning()
+                .withCause(e)
+                .log("Unable to deserialize response: ${e.message}")
             return null
         }
     }
@@ -488,8 +598,9 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
     /**
      * Wire format for request messages published to Redis.
      *
-     * Inbound requests are decoded with this class. Outbound requests are encoded by
-     * [OutboundEnvelopeSerializers], which takes field names and order from this descriptor.
+     * Requests are encoded, and inbound requests with a readable head decoded, by
+     * [RequestEnvelopeSerializers], which takes field names and order from this descriptor. This class
+     * decodes the remaining inbound requests.
      */
     @Serializable
     internal data class RequestEnvelope(
@@ -501,8 +612,9 @@ class RequestResponseBusImpl(private val api: RedisApi) : RequestResponseBus {
     /**
      * Wire format for response messages published to Redis.
      *
-     * Inbound responses are decoded with this class. Outbound responses are encoded by
-     * [OutboundEnvelopeSerializers], which takes field names and order from this descriptor.
+     * Responses are encoded, and inbound responses with a readable head decoded, by
+     * [RequestEnvelopeSerializers], which takes field names and order from this descriptor. This class
+     * decodes the remaining inbound responses.
      */
     @Serializable
     internal data class ResponseEnvelope(
