@@ -12,12 +12,11 @@ import java.util.concurrent.ConcurrentHashMap
 
 class LuaScriptExecutor private constructor(private val api: RedisApi, private val registry: LuaScriptRegistry) {
 
-    private val scriptShas = ConcurrentHashMap<String, Mono<String>>()
+    private val scriptShas = ConcurrentHashMap<String, String>()
     private val script by lazy { api.redissonReactive.getScript(StringCodec.INSTANCE) }
 
-    private fun getSha(id: String): Mono<String> = scriptShas.computeIfAbsent(id) {
-        script.scriptLoad(registry.get(id)).cache()
-    }
+    private fun getSha(id: String): Mono<String> = scriptShas[id]?.let { Mono.just(it) }
+        ?: script.scriptLoad(registry.get(id)).doOnNext { scriptShas[id] = it }
 
     fun <R : Any> execute(
         id: String,
