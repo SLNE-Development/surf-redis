@@ -22,6 +22,7 @@ local ver = redis.call('INCR', versionKey)
 local payload = newValue
 local msg = tostring(ver) .. delim .. originId .. delim .. payload
 redis.call('XADD', streamKey, 'MAXLEN', '~', maxLen, '*', fieldType, eventType, fieldMsg, msg)
+redis.call('PUBLISH', 'surf-redis:sync:wakeup', streamKey .. delim .. originId)
 
 -- Extra result: the previous value when the key was present
 if old == false then

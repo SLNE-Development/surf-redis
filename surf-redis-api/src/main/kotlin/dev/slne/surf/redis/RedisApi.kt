@@ -557,6 +557,11 @@ class RedisApi private constructor(
         cleanupFailure?.let { throw it }
     }
 
+    @InternalRedisAPI
+    fun registerDisposable(disposable: Disposable) {
+        disposables.put(disposable, Unit)
+    }
+
     /**
      * Indicates whether this instance holds the Redis connection and is not disconnecting.
      *

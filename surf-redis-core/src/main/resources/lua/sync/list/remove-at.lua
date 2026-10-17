@@ -43,5 +43,6 @@ redis.call(
     fieldType, eventType,
     fieldMsg, message
 )
+redis.call('PUBLISH', 'surf-redis:sync:wakeup', streamKey .. delim .. originId)
 
 return version

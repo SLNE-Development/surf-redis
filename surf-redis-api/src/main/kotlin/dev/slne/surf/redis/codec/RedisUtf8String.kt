@@ -32,6 +32,12 @@ object RedisUtf8String {
     fun write(output: ByteBuf, value: CharSequence, maxLength: Int = MAX_STRING_LENGTH) {
         checkEncoding(value.length <= maxLength) { "String too big (was ${value.length} characters, max $maxLength)" }
 
+        if (value is String && isAscii(value)) {
+            output.writeVarInt(value.length)
+            writeAscii(output, value)
+            return
+        }
+
         val bytesWritten = ByteBufUtil.utf8Bytes(value)
         val maxAllowedEncodedLength = ByteBufUtil.utf8MaxBytes(maxLength)
 
@@ -39,5 +45,27 @@ object RedisUtf8String {
 
         output.writeVarInt(bytesWritten)
         ByteBufUtil.reserveAndWriteUtf8(output, value, bytesWritten)
+    }
+
+    internal fun isAscii(value: String): Boolean {
+        for (index in value.indices) {
+            if (value[index].code >= 0x80) return false
+        }
+        return true
+    }
+
+    internal fun writeAscii(output: ByteBuf, value: String) {
+        val length = value.length
+        output.ensureWritable(length)
+
+        if (!output.hasArray()) {
+            output.writeBytes(value.toByteArray(StandardCharsets.UTF_8))
+            return
+        }
+
+        val writerIndex = output.writerIndex()
+        @Suppress("DEPRECATION", "PLATFORM_CLASS_MAPPED_TO_KOTLIN")
+        (value as java.lang.String).getBytes(0, length, output.array(), output.arrayOffset() + writerIndex)
+        output.writerIndex(writerIndex + length)
     }
 }
