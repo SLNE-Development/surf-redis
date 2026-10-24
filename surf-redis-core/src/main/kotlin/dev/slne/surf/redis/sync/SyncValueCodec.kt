@@ -30,8 +30,13 @@ internal class BinarySyncValueCodec<T : Any>(
 ) : SyncValueCodec<T> {
     override val descriptor: String = codecDescriptor(codec)
 
+    @Volatile
+    private var sizeEstimate = 0
+
+    private var sizeDecayGrace = 0
+
     override fun encode(value: T): String {
-        val raw = Unpooled.buffer(DEFAULT_INITIAL_CAPACITY)
+        val raw = Unpooled.buffer(sizeEstimate.takeIf { it > 0 } ?: DEFAULT_INITIAL_CAPACITY)
         try {
             codec.encode(raw, value)
             val size = raw.readableBytes()
@@ -40,6 +45,7 @@ internal class BinarySyncValueCodec<T : Any>(
                     "Codec '${codec.codecId}' produced $size bytes for $context; maximum is $MAX_BINARY_VALUE_SIZE"
                 )
             }
+            recordSize(size)
 
             val bytes = ByteBufUtil.getBytes(raw, raw.readerIndex(), size, false)
             return BASE64_ENCODER.encodeToString(bytes)
@@ -91,8 +97,29 @@ internal class BinarySyncValueCodec<T : Any>(
         }
     }
 
+    private fun recordSize(actualSize: Int) {
+        val observed = actualSize.coerceAtLeast(1)
+        val previous = sizeEstimate
+
+        if (observed >= previous) {
+            sizeEstimate = observed
+            sizeDecayGrace = SIZE_DECAY_GRACE
+            return
+        }
+
+        val grace = sizeDecayGrace
+        if (grace > 0) {
+            sizeDecayGrace = grace - 1
+            return
+        }
+
+        sizeEstimate = maxOf(observed, previous - (previous shr SIZE_DECAY_SHIFT))
+    }
+
     private companion object {
         private const val DEFAULT_INITIAL_CAPACITY = 64
+        private const val SIZE_DECAY_GRACE = 1
+        private const val SIZE_DECAY_SHIFT = 1
         private const val MAX_BINARY_VALUE_SIZE = 16 * 1024 * 1024
         private const val MAX_BASE64_VALUE_SIZE = (MAX_BINARY_VALUE_SIZE * 4 / 3) + 4
         private val BASE64_ENCODER = Base64.getUrlEncoder().withoutPadding()

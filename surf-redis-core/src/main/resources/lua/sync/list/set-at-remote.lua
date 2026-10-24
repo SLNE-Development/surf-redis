@@ -28,5 +28,6 @@ local ver = redis.call('INCR', versionKey)
 local payload = tostring(idx) .. delim .. current .. delim .. newValue
 local msg = tostring(ver) .. delim .. originId .. delim .. payload
 redis.call('XADD', streamKey, 'MAXLEN', '~', maxLen, '*', fieldType, eventType, fieldMsg, msg)
+redis.call('PUBLISH', 'surf-redis:sync:wakeup', streamKey .. delim .. originId)
 
 return { ver, payload }

@@ -29,6 +29,7 @@ end
 local ver = redis.call('INCR', versionKey)
 local msg = tostring(ver) .. delim .. originId .. delim
 redis.call('XADD', streamKey, 'MAXLEN', '~', maxLen, '*', fieldType, eventType, fieldMsg, msg)
+redis.call('PUBLISH', 'surf-redis:sync:wakeup', streamKey .. delim .. originId)
 
 redis.call('PEXPIRE', streamKey, ttl)
 redis.call('PEXPIRE', versionKey, ttl)

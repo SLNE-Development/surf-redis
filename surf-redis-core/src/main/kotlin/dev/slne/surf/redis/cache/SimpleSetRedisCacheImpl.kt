@@ -6,24 +6,25 @@ import com.sksamuel.aedile.core.expireAfterWrite
 import dev.slne.surf.api.core.util.logger
 import dev.slne.surf.redis.RedisApi
 import dev.slne.surf.redis.cache.SimpleSetRedisCacheImpl.Companion.ID_FAN_OUT_CHUNK
+import dev.slne.surf.redis.sync.SyncStreamWakeupBus
 import dev.slne.surf.redis.util.*
+import it.unimi.dsi.fastutil.objects.ObjectArrayList
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.future.await
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.KSerializer
-import org.redisson.api.RAtomicLongReactive
 import org.redisson.api.RScript
+import org.redisson.api.RSetReactive
 import org.redisson.api.RStreamReactive
 import org.redisson.api.stream.StreamMessageId
 import org.redisson.client.codec.StringCodec
 import reactor.core.Disposable
-import reactor.core.publisher.Flux
 import reactor.core.publisher.Mono
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration
@@ -70,6 +71,8 @@ class SimpleSetRedisCacheImpl<T : Any>(
         private const val REMOVE_INDEX_SCRIPT = "remove_by_index"
         private const val CLEAR_SCRIPT = "clear"
         private const val TOUCH_SCRIPT = "touch_value"
+        private const val GET_AND_TOUCH_SCRIPT = "get_and_touch"
+        private const val READ_ALL_AND_TOUCH_SCRIPT = "read_all_and_touch"
 
         private object LuaScripts : LuaScriptRegistry("lua/cache/simple-indexed") {
             init {
@@ -78,6 +81,8 @@ class SimpleSetRedisCacheImpl<T : Any>(
                 load(REMOVE_INDEX_SCRIPT)
                 load(CLEAR_SCRIPT)
                 load(TOUCH_SCRIPT)
+                load(GET_AND_TOUCH_SCRIPT)
+                load(READ_ALL_AND_TOUCH_SCRIPT)
             }
         }
 
@@ -111,9 +116,12 @@ class SimpleSetRedisCacheImpl<T : Any>(
     private val stream: RStreamReactive<String, String> by lazy {
         api.redissonReactive.getStream(streamKey, StringCodec.INSTANCE)
     }
-    private val versionCounter: RAtomicLongReactive by lazy {
-        api.redissonReactive.getAtomicLong(versionKey)
+    private val idsSet: RSetReactive<String> by lazy {
+        api.redissonReactive.getSet(idsRedisKey, StringCodec.INSTANCE)
     }
+
+    private val wakeupBus = SyncStreamWakeupBus.getInstance(api)
+    private val wakeupSink = wakeupBus.register(streamKey)
 
     private val nearValues = buildNearCache<T>(nearValueCacheSize)
     private val nearIds = buildNearCache<Set<String>>(1)
@@ -167,7 +175,8 @@ class SimpleSetRedisCacheImpl<T : Any>(
     override fun init(): Mono<Void> {
         if (isDisposed) return Mono.error(IllegalStateException("Cache '$namespace' is disposed"))
 
-        return stream.fetchLatestStreamId()
+        return wakeupBus.init()
+            .then(stream.fetchLatestStreamId())
             .doOnNext { id -> cursorId.set(id) }
             .doOnSuccess {
                 trackDisposable(startPolling())
@@ -177,13 +186,13 @@ class SimpleSetRedisCacheImpl<T : Any>(
     }
 
     override fun dispose0() {
+        wakeupBus.unregister(streamKey, wakeupSink)
         clearNearCacheOnly()
     }
 
     private fun startPolling() = stream.pollContinuously(
         cursorId = cursorId,
-        wakeups = Flux.never(),
-        pollInterval = 250.milliseconds,
+        wakeups = wakeupSink.asFlux(),
     ) {
         onSuccess { batch ->
             for ((messageId, fields) in batch) {
@@ -209,7 +218,7 @@ class SimpleSetRedisCacheImpl<T : Any>(
     }
 
     private fun startRefreshingTtl(): Disposable {
-        return RedisExpirableUtils.refreshContinuously(ttl, stream, versionCounter)
+        return RedisExpirableUtils.refreshContinuously(api.redissonReactive.keys, ttl, streamKey, versionKey)
     }
 
     private fun handleStreamFault() {
@@ -300,7 +309,7 @@ class SimpleSetRedisCacheImpl<T : Any>(
      * Runs [action] for every id, at most [ID_FAN_OUT_CHUNK] coroutines in flight at a time.
      */
     private suspend inline fun forEachIdChunked(
-        ids: Set<String>,
+        ids: Collection<String>,
         crossinline action: suspend (String) -> Unit
     ) {
         val iterator = ids.iterator()
@@ -329,20 +338,10 @@ class SimpleSetRedisCacheImpl<T : Any>(
      */
     private fun refreshValueTtl(id: String): Boolean {
         return refreshTtl(refreshKeyVal(id)) {
-            val argv = arrayOfNulls<Any>(4 + indexNames.size)
-            argv[0] = ttlMillisStr
-            argv[1] = keyPrefix
-            argv[2] = id
-            argv[3] = indicesSizeStr
-            for (i in indexNames.indices) {
-                argv[4 + i] = indexNames[i]
-            }
-
-            @Suppress("UNCHECKED_CAST")
-            scriptExecutor.execute<Long>(
+            scriptExecutor.executeWithValues<Long>(
                 TOUCH_SCRIPT, RScript.Mode.READ_WRITE, RScript.ReturnType.LONG,
                 keys = touchScriptKeys,
-                *(argv as Array<Any>)
+                values = touchValueArgv(id)
             ).subscribe(
                 { /* no payload needed */ },
                 { e ->
@@ -352,10 +351,43 @@ class SimpleSetRedisCacheImpl<T : Any>(
         }
     }
 
+    private fun touchValueArgv(id: String): Array<Any> {
+        val argv = arrayOfNulls<Any>(4 + indexNames.size)
+        argv[0] = ttlMillisStr
+        argv[1] = keyPrefix
+        argv[2] = id
+        argv[3] = indicesSizeStr
+        for (i in indexNames.indices) {
+            argv[4 + i] = indexNames[i]
+        }
+
+        @Suppress("UNCHECKED_CAST")
+        return argv as Array<Any>
+    }
+
+    private suspend fun getAndTouchValue(id: String): String? {
+        val raw = scriptExecutor.executeWithValues<String>(
+            GET_AND_TOUCH_SCRIPT, RScript.Mode.READ_WRITE, RScript.ReturnType.VALUE,
+            keys = touchScriptKeys,
+            values = touchValueArgv(id)
+        ).awaitSingleOrNull() ?: return null
+
+        refreshGate.put(refreshKeyVal(id), Unit)
+        return raw
+    }
+
+    /** Reads all members of the Redis set [redisKey] and refreshes its TTL in the same script call. */
+    private suspend fun readAllAndTouch(redisKey: String): Set<String> {
+        return scriptExecutor.execute<List<String>>(
+            READ_ALL_AND_TOUCH_SCRIPT, RScript.Mode.READ_WRITE, RScript.ReturnType.LIST,
+            keys = listOf(redisKey),
+            /* argv */ ttlMillisStr
+        ).awaitSingleOrNull().orEmpty().toSet()
+    }
+
     private fun refreshIdsTtl() {
         refreshTtl(refreshKeyIds()) {
-            api.redissonReactive.getSet<String>(idsRedisKey, StringCodec.INSTANCE)
-                .expire(ttl.toJavaDuration())
+            idsSet.expire(ttl.toJavaDuration())
                 .doOnError { e ->
                     log.atWarning().withCause(e).log("Failed to refresh TTL for $idsRedisKey")
                 }
@@ -402,17 +434,16 @@ class SimpleSetRedisCacheImpl<T : Any>(
             null -> Unit
         }
 
-        val bucket =
-            api.redissonReactive.getBucket<String>(valueRedisKey(normId), StringCodec.INSTANCE)
-        val raw = bucket.get().awaitSingleOrNull() ?: run {
+        val raw = getAndTouchValue(normId) ?: run {
             nearValues.put(normId, CacheEntry.Null)
             return null
         }
 
-        if (!refreshValueTtl(normId)) {
-            bucket.expire(ttl.toJavaDuration()).awaitSingleOrNull()
-        }
+        return cacheValue(normId, raw)
+    }
 
+    /** Decodes [raw], the stored value of [normId], and near-caches the result. */
+    private fun cacheValue(normId: String, raw: String): T? {
         val obj = if (raw == NULL_MARKER) null else api.json.decodeFromString(serializer, raw)
 
         if (obj == null) {
@@ -423,6 +454,76 @@ class SimpleSetRedisCacheImpl<T : Any>(
         nearValues.put(normId, CacheEntry.Value(obj))
 
         return obj
+    }
+
+    private suspend fun forEachCachedValue(
+        ids: Set<String>,
+        permits: Semaphore,
+        onValue: (id: String, value: T?) -> Unit
+    ) {
+        val misses = ObjectArrayList<String>(minOf(ids.size, ID_FAN_OUT_CHUNK))
+
+        for (id in ids) {
+            val normId = id.trim()
+            if (normId.isEmpty()) {
+                onValue(id, null)
+                continue
+            }
+            requireNoNul(normId, "id")
+
+            when (val entry = nearValues.getIfPresent(normId)) {
+                is CacheEntry.Value -> {
+                    refreshValueTtl(normId)
+                    onValue(id, entry.value)
+                }
+
+                CacheEntry.Null -> {
+                    refreshValueTtl(normId)
+                    onValue(id, null)
+                }
+
+                null -> {
+                    misses.add(id)
+                    if (misses.size == ID_FAN_OUT_CHUNK) {
+                        loadMisses(misses, permits, onValue)
+                        misses.clear()
+                    }
+                }
+            }
+        }
+
+        if (misses.isNotEmpty()) loadMisses(misses, permits, onValue)
+    }
+
+    private suspend fun loadMisses(
+        ids: List<String>,
+        permits: Semaphore,
+        onValue: (id: String, value: T?) -> Unit,
+    ) {
+        val keys = Array(ids.size) { valueRedisKey(ids[it].trim()) }
+        val raws = api.redissonReactive.getBuckets(StringCodec.INSTANCE).get<String>(*keys).awaitSingle()
+        val unrefreshedIds = ObjectArrayList<String>()
+
+        for (i in ids.indices) {
+            val normId = ids[i].trim()
+            val raw = raws[keys[i]]
+            if (raw == null) {
+                nearValues.put(normId, CacheEntry.Null)
+                onValue(ids[i], null)
+                continue
+            }
+
+            if (!refreshValueTtl(normId)) unrefreshedIds.add(normId)
+            onValue(ids[i], cacheValue(normId, raw))
+        }
+
+        forEachIdChunked(unrefreshedIds) { normId ->
+            permits.withPermit {
+                api.redisson.getBucket<String>(valueRedisKey(normId), StringCodec.INSTANCE)
+                    .expireAsync(ttl.toJavaDuration())
+                    .await()
+            }
+        }
     }
 
     override suspend fun <V : Any> findByIndexCached(index: RedisSetIndex<T, V>, value: V): Set<T> {
@@ -445,10 +546,7 @@ class SimpleSetRedisCacheImpl<T : Any>(
 
             CacheEntry.Null -> emptySet()
             else -> {
-                val redisKey = indexRedisKey(index.name, queryValue)
-                val set = api.redissonReactive.getSet<String>(redisKey, StringCodec.INSTANCE)
-                val ids = set.readAll().awaitSingleOrNull().orEmpty()
-                set.expire(ttl.toJavaDuration()).awaitSingleOrNull()
+                val ids = readAllAndTouch(indexRedisKey(index.name, queryValue))
 
                 nearIndexIds.put(
                     cacheKey,
@@ -465,29 +563,23 @@ class SimpleSetRedisCacheImpl<T : Any>(
         val indexSet = api.redissonReactive.getSet<String>(redisIndexKey, StringCodec.INSTANCE)
         val result = ConcurrentHashMap.newKeySet<T>(loadedIds.size)
         val filteredIds = ConcurrentHashMap.newKeySet<String>(loadedIds.size)
-        val changed = AtomicBoolean(false)
+        val staleIds = ObjectArrayList<String>()
         val semaphore = Semaphore(MAX_CONCURRENT_REDIS_OPS)
 
-        forEachIdChunked(loadedIds) { id ->
-            semaphore.withPermit {
-                val element = getCachedById(id)
-                if (element == null) {
-                    indexSet.remove(id).awaitSingleOrNull()
-                    changed.set(true)
-                } else {
-                    val matches = index.extractStringsSequence(element).any { it == queryValue }
-                    if (!matches) {
-                        indexSet.remove(id).awaitSingleOrNull()
-                        changed.set(true)
-                    } else {
-                        filteredIds.add(id)
-                        result.add(element)
-                    }
-                }
+        forEachCachedValue(loadedIds, semaphore) { id, element ->
+            if (element != null && index.extractStringsSequence(element).any { it == queryValue }) {
+                filteredIds.add(id)
+                result.add(element)
+            } else {
+                staleIds.add(id)
             }
         }
 
-        if (changed.get()) {
+        if (staleIds.isNotEmpty()) {
+            forEachIdChunked(staleIds) { id ->
+                semaphore.withPermit { indexSet.remove(id).awaitSingleOrNull() }
+            }
+
             nearIndexIds.put(
                 cacheKey,
                 if (filteredIds.isEmpty()) CacheEntry.Null else CacheEntry.Value(filteredIds)
@@ -546,12 +638,12 @@ class SimpleSetRedisCacheImpl<T : Any>(
         }
 
         @Suppress("UNCHECKED_CAST")
-        val result = scriptExecutor.execute<List<Any>>(
+        val result = scriptExecutor.executeWithValues<List<Any>>(
             UPSERT_SCRIPT,
             RScript.Mode.READ_WRITE,
             RScript.ReturnType.LIST,
             scriptKeys,
-            *(argv as Array<Any>),
+            values = argv as Array<Any>,
         ).awaitSingle()
 
         val (wasNew, touchedIndices) = parseLuaFlagAndTouched(result)
@@ -569,20 +661,21 @@ class SimpleSetRedisCacheImpl<T : Any>(
         val ids = getAllIdsCached()
         if (ids.isEmpty()) return emptySet()
 
-        val idsRedis = api.redissonReactive.getSet<String>(idsRedisKey, StringCodec.INSTANCE)
         val result = ConcurrentHashMap.newKeySet<T>()
+        val staleIds = ObjectArrayList<String>()
         val semaphore = Semaphore(MAX_CONCURRENT_REDIS_OPS)
 
-        forEachIdChunked(ids) { id ->
-            semaphore.withPermit {
-                val value = getCachedById(id)
-                if (value == null) {
-                    idsRedis.remove(id).awaitSingleOrNull() // stale
-                    nearIds.invalidate(LOCAL_IDS_CACHE_KEY)
-                } else if (condition(value)) {
-                    result.add(value)
-                }
+        forEachCachedValue(ids, semaphore) { id, value ->
+            if (value == null) {
+                staleIds.add(id)
+            } else if (condition(value)) {
+                result.add(value)
             }
+        }
+
+        forEachIdChunked(staleIds) { id ->
+            semaphore.withPermit { idsSet.remove(id).awaitSingleOrNull() }
+            nearIds.invalidate(LOCAL_IDS_CACHE_KEY)
         }
 
         return result
@@ -635,20 +728,18 @@ class SimpleSetRedisCacheImpl<T : Any>(
         val ids = getAllIdsCached()
         if (ids.isEmpty()) return false
 
-        val removedAny = AtomicBoolean(false)
+        val matchedIds = ObjectArrayList<String>()
         val semaphore = Semaphore(MAX_CONCURRENT_REDIS_OPS)
 
-        forEachIdChunked(ids) { id ->
-            semaphore.withPermit {
-                val value = getCachedById(id)
-                if (value != null && predicate(value)) {
-                    removedAny.set(true)
-                    removeById(id)
-                }
-            }
+        forEachCachedValue(ids, semaphore) { id, value ->
+            if (value != null && predicate(value)) matchedIds.add(id)
         }
 
-        return removedAny.get()
+        forEachIdChunked(matchedIds) { id ->
+            semaphore.withPermit { removeById(id) }
+        }
+
+        return matchedIds.isNotEmpty()
     }
 
     override suspend fun removeById(id: String): Boolean {
@@ -672,12 +763,12 @@ class SimpleSetRedisCacheImpl<T : Any>(
         }
 
         @Suppress("UNCHECKED_CAST")
-        val result = scriptExecutor.execute<List<Any>>(
+        val result = scriptExecutor.executeWithValues<List<Any>>(
             REMOVE_ID_SCRIPT,
             RScript.Mode.READ_WRITE,
             RScript.ReturnType.LIST,
             scriptKeys,
-            *(argv as Array<Any>)
+            values = argv as Array<Any>
         ).awaitSingle()
 
         val (removed, touched) = parseLuaFlagAndTouched(result)
@@ -721,17 +812,28 @@ class SimpleSetRedisCacheImpl<T : Any>(
         }
 
         @Suppress("UNCHECKED_CAST")
-        val removedCount = scriptExecutor.execute<Long>(
+        val result = scriptExecutor.executeWithValues<List<Any>>(
             REMOVE_INDEX_SCRIPT,
             RScript.Mode.READ_WRITE,
-            RScript.ReturnType.LONG,
+            RScript.ReturnType.LIST,
             scriptKeys,
-            *(argv as Array<Any>)
+            values = argv as Array<Any>
         ).awaitSingle()
 
-        if (removedCount <= 0L) return false
+        val removedCount = (result[0] as Number).toInt()
+        if (removedCount <= 0) return false
 
-        clearNearCacheOnly()
+        for (i in 1..removedCount) {
+            val removedId = result[i].toString()
+            nearValues.invalidate(removedId)
+            refreshGate.invalidate(refreshKeyVal(removedId))
+        }
+        nearIds.invalidate(LOCAL_IDS_CACHE_KEY)
+        nearIndexIds.invalidate(indexCacheKey(index.name, queryValue))
+        for (i in removedCount + 1 until result.size) {
+            nearIndexIds.invalidate(result[i].toString())
+        }
+
         return true
     }
 
@@ -751,12 +853,12 @@ class SimpleSetRedisCacheImpl<T : Any>(
         }
 
         @Suppress("UNCHECKED_CAST")
-        val deletedCount = scriptExecutor.execute<Long>(
+        val deletedCount = scriptExecutor.executeWithValues<Long>(
             CLEAR_SCRIPT,
             RScript.Mode.READ_WRITE,
             RScript.ReturnType.LONG,
             scriptKeys,
-            *(argv as Array<Any>)
+            values = argv as Array<Any>
         ).awaitSingle()
 
         clearNearCacheOnly()
@@ -776,9 +878,7 @@ class SimpleSetRedisCacheImpl<T : Any>(
             }
 
             null -> {
-                val set = api.redissonReactive.getSet<String>(idsRedisKey, StringCodec.INSTANCE)
-                val ids = set.readAll().awaitSingleOrNull().orEmpty()
-                set.expire(ttl.toJavaDuration()).awaitSingleOrNull()
+                val ids = readAllAndTouch(idsRedisKey)
                 nearIds.put(
                     LOCAL_IDS_CACHE_KEY,
                     if (ids.isEmpty()) CacheEntry.Null else CacheEntry.Value(ids)

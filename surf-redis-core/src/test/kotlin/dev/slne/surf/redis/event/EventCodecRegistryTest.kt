@@ -17,6 +17,36 @@ class EventCodecRegistryTest {
     }
 
     @Test
+    fun `discovers a named companion codec`() {
+        val registry = EventCodecRegistry()
+
+        assertTrue(NamedCompanionEvent.Codec === registry.codecForPublishing(NamedCompanionEvent::class.java)?.codec)
+    }
+
+    @Test
+    fun `discovers a codec provided by a companion property`() {
+        val registry = EventCodecRegistry()
+
+        assertTrue(ProvidedCodecEvent.codec === registry.codecForPublishing(ProvidedCodecEvent::class.java)?.codec)
+    }
+
+    @Test
+    fun `nested non-companion object is not discovered`() {
+        val registry = EventCodecRegistry()
+
+        assertNull(registry.codecForPublishing(NestedObjectEvent::class.java))
+    }
+
+    @Test
+    fun `inaccessible companion fails discovery`() {
+        val registry = EventCodecRegistry()
+
+        assertFailsWith<IllegalStateException> {
+            registry.codecForPublishing(PrivateCompanionEvent::class.java)
+        }
+    }
+
+    @Test
     fun `event without a codec remains on JSON path`() {
         val registry = EventCodecRegistry()
         registry.registerDiscovered(JsonEvent::class.java)
@@ -75,6 +105,50 @@ class EventCodecRegistryTest {
             }
 
             override fun decode(buffer: ByteBuf) = CompanionEvent(buffer.readInt())
+        }
+    }
+
+    class NamedCompanionEvent(val value: Int) : RedisEvent() {
+        companion object Codec : RedisEventCodec<NamedCompanionEvent> {
+            override fun encode(buffer: ByteBuf, value: NamedCompanionEvent) {
+                buffer.writeInt(value.value)
+            }
+
+            override fun decode(buffer: ByteBuf) = NamedCompanionEvent(buffer.readInt())
+        }
+    }
+
+    class ProvidedCodecEvent(val value: Int) : RedisEvent() {
+        companion object {
+            val codec: RedisEventCodec<ProvidedCodecEvent> = object : RedisEventCodec<ProvidedCodecEvent> {
+                override val eventId = "provided-codec-event"
+
+                override fun encode(buffer: ByteBuf, value: ProvidedCodecEvent) {
+                    buffer.writeInt(value.value)
+                }
+
+                override fun decode(buffer: ByteBuf) = ProvidedCodecEvent(buffer.readInt())
+            }
+        }
+    }
+
+    class NestedObjectEvent(val value: Int) : RedisEvent() {
+        object Codec : RedisEventCodec<NestedObjectEvent> {
+            override fun encode(buffer: ByteBuf, value: NestedObjectEvent) {
+                buffer.writeInt(value.value)
+            }
+
+            override fun decode(buffer: ByteBuf) = NestedObjectEvent(buffer.readInt())
+        }
+    }
+
+    class PrivateCompanionEvent(val value: Int) : RedisEvent() {
+        private companion object : RedisEventCodec<PrivateCompanionEvent> {
+            override fun encode(buffer: ByteBuf, value: PrivateCompanionEvent) {
+                buffer.writeInt(value.value)
+            }
+
+            override fun decode(buffer: ByteBuf) = PrivateCompanionEvent(buffer.readInt())
         }
     }
 
