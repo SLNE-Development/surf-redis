@@ -6,7 +6,7 @@ import org.jetbrains.kotlin.gradle.dsl.abi.ExperimentalAbiValidation
 
 plugins {
     id("dev.slne.surf.api.gradle.core")
-    id("org.jetbrains.dokka-javadoc") version "2.2.0"
+    id("org.jetbrains.dokka-javadoc") version "2.3.0"
 }
 
 surfCoreApi {
