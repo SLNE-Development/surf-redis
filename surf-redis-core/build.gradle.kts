@@ -3,7 +3,7 @@ import me.champeau.jmh.JMHTask
 plugins {
     id("dev.slne.surf.api.gradle.core")
     id("com.github.gmazzo.buildconfig") version "6.1.2"
-    id("me.champeau.jmh") version "0.7.3"
+    id("me.champeau.jmh") version "0.7.4"
 }
 
 @Suppress("RedundantSuppression", "AvoidDuplicateDependencies") // different classifiers
