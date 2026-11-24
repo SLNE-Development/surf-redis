@@ -3,7 +3,7 @@ import me.champeau.jmh.JMHTask
 plugins {
     id("dev.slne.surf.api.gradle.core")
     id("com.github.gmazzo.buildconfig") version "6.1.2"
-    id("me.champeau.jmh") version "0.7.3"
+    id("me.champeau.jmh") version "0.7.4"
 }
 
 @Suppress("RedundantSuppression", "AvoidDuplicateDependencies") // different classifiers
@@ -47,11 +47,11 @@ dependencies {
     }
 
     testImplementation(kotlin("test-junit5"))
-    testImplementation("org.jetbrains.kotlinx:kotlinx-serialization-json-jvm:1.11.0")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-serialization-json-jvm:1.13.0")
     testImplementation(libs.lincheck)
     testRuntimeOnly("it.unimi.dsi:fastutil:8.5.19")
 
-    add("jmhImplementation", "org.jetbrains.kotlinx:kotlinx-serialization-json-jvm:1.11.0")
+    add("jmhImplementation", "org.jetbrains.kotlinx:kotlinx-serialization-json-jvm:1.13.0")
 }
 
 afterEvaluate {
