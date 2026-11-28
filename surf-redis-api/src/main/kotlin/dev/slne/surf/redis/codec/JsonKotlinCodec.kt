@@ -49,12 +49,16 @@ class JsonKotlinCodec<T : Any> private constructor(
 
     override fun write(buf: ByteBuf, value: T) {
         val encoded = json.encodeToString(serializer, value)
-        val encodedLength = ByteBufUtil.utf8Bytes(encoded)
+
+        if (RedisUtf8String.isAscii(encoded)) {
+            RedisUtf8String.writeAscii(buf, encoded)
+            return
+        }
 
         ByteBufUtil.reserveAndWriteUtf8(
             buf,
             encoded,
-            encodedLength
+            ByteBufUtil.utf8Bytes(encoded)
         )
     }
 

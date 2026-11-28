@@ -2,14 +2,12 @@ package dev.slne.surf.redis.sync
 
 import dev.slne.surf.api.core.util.logger
 import dev.slne.surf.redis.RedisApi
+import dev.slne.surf.redis.RedisInstance
 import dev.slne.surf.redis.util.DisposableAware
 import org.jetbrains.annotations.MustBeInvokedByOverriders
-import reactor.core.publisher.Flux
 import reactor.core.publisher.Mono
 import reactor.util.function.Tuple2
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.time.Duration
 
 
@@ -26,14 +24,11 @@ abstract class AbstractSyncStructure<L, R : AbstractSyncStructure.VersionedSnaps
     override val id = id.replace(":", "_")
 
     private val listeners = CopyOnWriteArrayList<(L) -> Unit>()
-    protected val lock = ReentrantReadWriteLock()
-
-    private val listenerIds = ConcurrentHashMap.newKeySet<Int>()
+    internal val lock = SyncStructureLock()
 
     @MustBeInvokedByOverriders
     override fun init(): Mono<Void> {
-        return registerListeners()
-            .then(loadFromRemote())
+        return loadFromRemote()
             .doOnError { throwable ->
                 log.atSevere()
                     .withCause(throwable)
@@ -41,31 +36,8 @@ abstract class AbstractSyncStructure<L, R : AbstractSyncStructure.VersionedSnaps
             }
     }
 
-    private fun registerListeners(): Mono<Void> = Flux.merge(registerListeners0())
-        .doOnError { e ->
-            log.atSevere()
-                .withCause(e)
-                .log("Failed to register listeners for $id")
-        }
-        .doOnNext { listenerIds.add(it) }
-        .then()
-
-    private fun unregisterListeners(): Mono<Void> = Flux.fromIterable(listenerIds)
-        .concatMap { unregisterListener(it).thenReturn(it) }
-        .doOnError { e ->
-            log.atSevere()
-                .withCause(e)
-                .log("Failed to unregister listeners for $id")
-        }
-        .doOnNext { listenerIds.remove(it) }
-        .then()
-
-    protected abstract fun registerListeners0(): List<Mono<Int>>
-    protected abstract fun unregisterListener(id: Int): Mono<*>
-
     @MustBeInvokedByOverriders
     override fun dispose0() {
-        unregisterListeners().block()
     }
 
     override fun addListener(listener: (L) -> Unit) {
@@ -94,8 +66,12 @@ abstract class AbstractSyncStructure<L, R : AbstractSyncStructure.VersionedSnaps
 
     /**
      * Reads the current remote snapshot without applying it locally.
+     *
+     * The snapshot is emitted on [RedisInstance.streamPollScheduler], never on the Redis I/O thread
+     * that completed the reply.
      */
     protected fun loadRemoteSnapshot(): Mono<R> = loadFromRemote0()
+        .publishOn(RedisInstance.get().streamPollScheduler)
         .switchIfEmpty(
             Mono.error(
                 IllegalStateException("Remote snapshot for synchronized structure '$id' returned no result")

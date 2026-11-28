@@ -7,11 +7,8 @@ import dev.slne.surf.redis.sync.AbstractSyncStructure
 import dev.slne.surf.redis.sync.AbstractSyncStructure.SimpleVersionedSnapshot
 import dev.slne.surf.redis.sync.SyncValueCodec
 import dev.slne.surf.redis.util.LuaScriptRegistry
-import dev.slne.surf.redis.util.RedisExpirableUtils
 import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
-import org.redisson.api.DeletedObjectListener
-import org.redisson.api.ExpiredObjectListener
 import org.redisson.client.codec.StringCodec
 import reactor.core.publisher.Mono
 import java.util.concurrent.atomic.AtomicReference
@@ -62,34 +59,21 @@ class SyncValueImpl<T : Any> internal constructor(
     private val value = AtomicReference(defaultValue)
     private val encodedDefault = encodeValue(defaultValue)
 
-    override fun init(): Mono<Void> {
-        return super.init()
-            .doOnSuccess {
-                trackDisposable(RedisExpirableUtils.refreshContinuously(ttl, bucket))
-            }
-            .then()
-    }
-
-    override fun registerListeners0(): List<Mono<Int>> = listOf(
-        bucket.addListener(ExpiredObjectListener { requestResync() }),
-        bucket.addListener(DeletedObjectListener { requestResync() })
-    )
-
-    override fun unregisterListener(id: Int): Mono<*> = bucket.removeListener(id)
-
     override fun get(): T = value.get()
 
     override suspend fun getRemote(): T = decodeOrDefault(pullRemoteSnapshot().awaitSingle().value)
 
     override fun set(newValue: T) {
-        val old = value.getAndSet(newValue)
+        val old: T
+        val epoch = mutateLocally { old = value.getAndSet(newValue) }
 
         notifyListeners(SyncValueChange.Updated(newValue, old))
-        writeToRemote(SET_SCRIPT, EVENT_SET, encodeValue(newValue))
+        writeToRemote(epoch, SET_SCRIPT, EVENT_SET, encodeValue(newValue))
     }
 
     override suspend fun setAndAwait(newValue: T) {
-        val old = value.getAndSet(newValue)
+        val old: T
+        val epoch = mutateLocally { old = value.getAndSet(newValue) }
 
         notifyListeners(
             SyncValueChange.Updated(
@@ -99,6 +83,7 @@ class SyncValueImpl<T : Any> internal constructor(
         )
 
         writeToRemoteAwait(
+            epoch,
             SET_SCRIPT,
             EVENT_SET,
             encodeValue(newValue),
@@ -193,8 +178,11 @@ class SyncValueImpl<T : Any> internal constructor(
     }
 
     override fun overrideFromRemote(raw: SimpleVersionedSnapshot<String?>) {
-        value.set(decodeOrDefault(raw.value))
-        super.overrideFromRemote(raw)
+        val decoded = decodeOrDefault(raw.value)
+        lock.write {
+            value.set(decoded)
+            super.overrideFromRemote(raw)
+        }
     }
 
     private fun decodeValue(value: String): T = valueCodec.decode(value)

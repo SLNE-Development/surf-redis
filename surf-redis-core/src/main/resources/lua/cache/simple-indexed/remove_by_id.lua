@@ -67,6 +67,7 @@ for _, entry in ipairs(touched) do
   redis.call('XADD', streamKey, 'MAXLEN', '~', maxLen, '*', fieldType, 'IX', fieldMsg, msgIdx)
   ver = ver + 1
 end
+redis.call('PUBLISH', 'surf-redis:sync:wakeup', streamKey .. delim .. originId)
 
 redis.call('PEXPIRE', streamKey, ttl)
 redis.call('PEXPIRE', versionKey, ttl)

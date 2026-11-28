@@ -15,7 +15,7 @@ class LuaScriptExecutor private constructor(private val api: RedisApi, private v
     private val scriptShas = ConcurrentHashMap<String, Mono<String>>()
     private val script by lazy { api.redissonReactive.getScript(StringCodec.INSTANCE) }
 
-    private fun getSha(id: String): Mono<String> = scriptShas.computeIfAbsent(id) {
+    private fun getSha(id: String): Mono<String> = scriptShas[id] ?: scriptShas.computeIfAbsent(id) {
         script.scriptLoad(registry.get(id)).cache()
     }
 
@@ -26,17 +26,28 @@ class LuaScriptExecutor private constructor(private val api: RedisApi, private v
         keys: List<Any>,
         vararg values: Any,
         tries: Int = 3
+    ): Mono<R> = executeWithValues(id, mode, returnType, keys, values, tries)
+
+    internal fun <R : Any> executeWithValues(
+        id: String,
+        mode: RScript.Mode,
+        returnType: RScript.ReturnType,
+        keys: List<Any>,
+        values: Array<out Any>,
+        tries: Int = 3
     ): Mono<R> {
         return Mono.defer { getSha(id) }
             .flatMap { sha -> script.evalSha<R>(mode, sha, returnType, keys, *values) }
             .doOnError(RedisNoScriptException::class.java) { scriptShas.remove(id) }
             .retryWhen(
-                Retry.max(tries.toLong())
+                if (tries == 3) DEFAULT_RETRY else Retry.max(tries.toLong())
                     .filter { it is RedisNoScriptException }
             )
     }
 
     companion object {
+        private val DEFAULT_RETRY = Retry.max(3).filter { it is RedisNoScriptException }
+
         /**
          * A cache that maps a Redis API instance to a nested cache, which links LuaScriptRegistry objects
          * to their corresponding LuaScriptExecutor instances. The outer cache is keyed by `RedisApi`, while

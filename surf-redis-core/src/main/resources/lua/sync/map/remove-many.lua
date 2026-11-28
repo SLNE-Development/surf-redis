@@ -36,5 +36,9 @@ for i = 7, #ARGV do
     end
 end
 
+if lastVersion > 0 then
+    redis.call('PUBLISH', 'surf-redis:sync:wakeup', streamKey .. delim .. originId)
+end
+
 -- Return the contiguous version range so the originating client can advance without a full resync.
 return {firstVersion, lastVersion}

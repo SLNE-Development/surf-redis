@@ -17,6 +17,7 @@ if deleted > 0 then
     local payload = "" -- No additional payload for clear
     local msg = tostring(ver) .. delim .. originId .. delim .. payload
     redis.call('XADD', streamKey, 'MAXLEN', '~', maxLen, '*', fieldType, eventType, fieldMsg, msg)
+    redis.call('PUBLISH', 'surf-redis:sync:wakeup', streamKey .. delim .. originId)
     return ver
 end
 

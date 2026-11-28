@@ -1,21 +1,23 @@
 package dev.slne.surf.redis.sync
 
 import com.github.benmanes.caffeine.cache.Caffeine
-import dev.slne.surf.api.core.util.logger
 import dev.slne.surf.redis.RedisApi
 import org.redisson.client.codec.StringCodec
+import reactor.core.Disposable
 import reactor.core.publisher.Mono
 import reactor.core.publisher.Sinks
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicReference
 
 internal class SyncStreamWakeupBus private constructor(
     private val api: RedisApi,
-) {
+) : Disposable {
     companion object {
-        private val log = logger()
-
-        private const val CHANNEL = "surf-redis:sync:wakeup"
+        /**
+         * Channel the sync and cache mutation scripts publish `streamKey\u0000originId` to after each XADD
+         */
+        internal const val CHANNEL = "surf-redis:sync:wakeup"
         private const val MESSAGE_DELIMITER = '\u0000'
 
         private val byApi = Caffeine.newBuilder()
@@ -24,7 +26,7 @@ internal class SyncStreamWakeupBus private constructor(
             .build<RedisApi, SyncStreamWakeupBus>()
 
         fun getInstance(api: RedisApi): SyncStreamWakeupBus =
-            byApi.get(api) { SyncStreamWakeupBus(it) }
+            byApi.get(api) { SyncStreamWakeupBus(it).also(it::registerDisposable) }
     }
 
     private val topic by lazy {
@@ -33,15 +35,23 @@ internal class SyncStreamWakeupBus private constructor(
 
     private val subscribers = ConcurrentHashMap<String, CopyOnWriteArrayList<Sinks.Many<Unit>>>()
 
+    private val listenerId = AtomicReference<Int?>()
+
     private val initialization: Mono<Void> by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         topic.addListener(String::class.java) { _, message ->
             handleWakeup(message)
         }
+            .doOnNext(listenerId::set)
             .then()
             .cache()
     }
 
     fun init(): Mono<Void> = initialization
+
+    override fun dispose() {
+        val id = listenerId.getAndSet(null) ?: return
+        topic.removeListener(id).block()
+    }
 
     fun register(streamKey: String): Sinks.Many<Unit> {
         val sink = Sinks.many()
@@ -69,26 +79,6 @@ internal class SyncStreamWakeupBus private constructor(
         }
     }
 
-    fun publish(streamKey: String) {
-        val message = buildString(
-            streamKey.length + api.clientId.length + 1
-        ) {
-            append(streamKey)
-            append(MESSAGE_DELIMITER)
-            append(api.clientId)
-        }
-
-        topic.publish(message)
-            .subscribe(
-                {},
-                { throwable ->
-                    log.atFine()
-                        .withCause(throwable)
-                        .log("Failed to publish sync stream wakeup for '$streamKey'")
-                },
-            )
-    }
-
     private fun handleWakeup(message: String) {
         val delimiter = message.lastIndexOf(MESSAGE_DELIMITER)
         if (delimiter <= 0 || delimiter == message.lastIndex) {
@@ -106,7 +96,27 @@ internal class SyncStreamWakeupBus private constructor(
         val streamSubscribers = subscribers[streamKey] ?: return
 
         for (sink in streamSubscribers) {
-            sink.tryEmitNext(Unit)
+            sink.emitWakeup()
         }
     }
+}
+
+/** Upper bound for waiting out a concurrent emission, whose `onNext` also dispatches the stream read. */
+private const val WAKEUP_COLLISION_BUDGET_NANOS = 1_000_000L
+
+/**
+ * Emits a wakeup, retrying only while another thread is inside an emission on this serialized sink.
+ *
+ * Wakeups are idempotent, so every other outcome (no subscriber, terminated sink, or a collision
+ * outlasting [collisionBudgetNanos]) drops the signal and leaves it to the interval fallback poll.
+ * Never throws for a failed emission.
+ */
+internal fun Sinks.Many<Unit>.emitWakeup(collisionBudgetNanos: Long = WAKEUP_COLLISION_BUDGET_NANOS) {
+    if (tryEmitNext(Unit) != Sinks.EmitResult.FAIL_NON_SERIALIZED) return
+
+    val deadline = System.nanoTime() + collisionBudgetNanos
+    do {
+        Thread.yield()
+        if (tryEmitNext(Unit) != Sinks.EmitResult.FAIL_NON_SERIALIZED) return
+    } while (System.nanoTime() - deadline < 0)
 }
